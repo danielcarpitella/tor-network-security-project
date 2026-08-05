@@ -6,3 +6,12 @@ ORPort 9001 IPv4Only
 
 # Enable exit
 ExitRelay 1
+
+# TestingTorNetwork normally disables this automatically, but keep it
+# explicit so the private lab target is not rejected by the exit policy.
+ExitPolicyRejectPrivate 0
+
+# Lab-only exit policy: permit HTTP destinations so the authority assigns the
+# Exit flag. The clearnet experiment exposes only its private target network.
+ExitPolicy accept *:80
+ExitPolicy reject *:*

@@ -13,3 +13,4 @@ SocksPort 0
 # This is because flags are given based on the fraction of uptime compared to the relay lifetime
 TestingDirAuthVoteGuard *
 TestingDirAuthVoteHSDir *
+TestingDirAuthVoteExit *

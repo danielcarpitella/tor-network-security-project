@@ -1,2 +1,7 @@
 # We specifically listen on 0.0.0.0 to allow the host to connect through an exposed Docker port
 SocksPort 0.0.0.0:9050
+
+# This is intentionally enabled only for the isolated private test network.
+# It permits the client to request the lab's private clearnet target through
+# an exit relay; do not use this setting on the public Tor network.
+ClientRejectInternalAddresses 0
