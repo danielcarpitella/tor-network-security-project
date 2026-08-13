@@ -179,7 +179,7 @@ il server HTTP.
 Preparare la rete target e il server:
 
 ```bash
-./experiments/clearnet/scripts/prepare.sh
+./shared-base/clearnet/scripts/prepare.sh
 ```
 
 Il comando crea:
@@ -198,7 +198,7 @@ docker network inspect clearnet-target
 Eseguire la richiesta attraverso Tor:
 
 ```bash
-./experiments/clearnet/scripts/test.sh
+./shared-base/clearnet/scripts/test.sh
 ```
 
 Risposta attesa:
@@ -250,7 +250,7 @@ docker exec -it testing-tor-da-NOME nyx
 Rimuovere solo lo scenario clearnet, lasciando attiva la rete Tor:
 
 ```bash
-./experiments/clearnet/scripts/cleanup.sh
+./shared-base/clearnet/scripts/cleanup.sh
 ```
 
 Fermare tutti i container Tor:

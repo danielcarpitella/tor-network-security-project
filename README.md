@@ -1,26 +1,46 @@
 # Rete Tor privata per esperimenti
 
-La repository contiene una rete Tor privata e isolata, usata per confrontare un
-servizio clearnet interno e un onion service.
+Questa repo è stat fatta a partire da un clone della repo: https://github.com/daxAKAhackerman/testing-tor-network su cui è basata l'articolo: https://medium.com/@dax_dev/creating-a-testing-tor-network-from-scratch-e952d76a18cb
+cioè l'articolo che il prof ha consigliato nel docuemento dove sono esposti i progetti.
 
-> Stato: questa è una base sperimentale temporanea. Il modello di minaccia e
-> gli esperimenti definitivi devono essere confermati dal professore prima di
-> aggiungere packet capture, analisi o nuovi attacchi.
+è suddivisa in una "base comune" che sarebbe la cartella shared-base e poi c'è la cartella experiments dove ognuno di noi 3 ha la sua cartellla dove si sviluppa individualmente la sua parte. 
 
-## Regole del laboratorio
+In questo README ho inserito anche una breve parte teroca dove dovrebbe esserci lo stretto necessario da sapere per lavorare sul progetto. 
 
-- Tutti i nodi restano nella VM e nelle reti Docker private.
-- Non eseguire esperimenti sulla rete Tor pubblica.
-- Le configurazioni che consentono destinazioni private o HTTP esistono solo
-  per questo ambiente isolato e non sono adatte a un relay pubblico.
+Prima di iniziare consiglio di fare qualche prova e mettere le mani in pasta sia con clernet che con onion service, docs/GETTING_STARTED.md qui ci sono le indicazioni per fare le prove. 
 
-## Da dove iniziare
+In docs/PROJECT_PLAN.md c'è una sorta di docuemntazione generale di tutto il progetto, così poi tipo il report da presentare al prof lo facciamo in poco.
 
-| Documento | Quando leggerlo |
-| --- | --- |
-| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) | Per installare, avviare e provare onion service e clearnet. |
-| [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) | Per obiettivi, architettura, esperimenti e divisione del lavoro. |
-| [`docs/UPSTREAM_NOTES.md`](docs/UPSTREAM_NOTES.md) | Per provenienza della base e note tecniche upstream. |
+Boh dovrebbe essere tutto.
+
+
+- la cartella/parte di Carpi è experiment/clearnet-correlation
+
+
+## Base condivisa ed esperimenti
+
+Un nuovo membro del gruppo dovrebbe seguire questo percorso:
+
+1. clonare la repository e seguire [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md);
+2. avviare la rete e riprodurre le prove onion e clearnet;
+3. iniziare il proprio lavoro nella cartella assegnata sotto
+   [`experiments/`](experiments/).
+
+La cartella [`shared-base/`](shared-base/) contiene la **base comune** del
+laboratorio: gli script e le istruzioni riutilizzabili per gli scenari onion e
+clearnet. Non contiene attacchi o risultati individuali.
+
+La cartella [`experiments/`](experiments/) contiene invece il lavoro di ricerca
+costruito sopra tale base. Ogni esperimento ha uno spazio separato per evitare
+che una modifica all'analisi individuale cambi involontariamente lo scenario
+comune:
+
+- [`clearnet-correlation/`](experiments/clearnet-correlation/) — correlazione
+  tra guard del client ed exit relay nello scenario clearnet;
+- [`onion-correlation/`](experiments/onion-correlation/) — correlazione tra
+  guard del client e guard del servizio onion;
+- [`topology-comparison/`](experiments/topology-comparison/) — confronto tra
+  scenari e topologie.
 
 ## Basi teoriche essenziali
 
