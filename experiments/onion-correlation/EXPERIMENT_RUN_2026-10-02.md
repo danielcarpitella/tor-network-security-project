@@ -517,3 +517,10 @@ trasformano automaticamente ogni burst in ground truth. Finché non viene
 definita e verificata un'etichettatura indipendente, mantenere i risultati
 attuali descritti come copertura e coerenza temporale euristiche; non
 ricalcolarli come precision, recall o accuratezza.
+
+### Stato del commit e della pubblicazione
+
+Le modifiche del contributo sono state registrate in un commit locale. Al
+momento non è ancora possibile pubblicarlo con `push`, perché l'autrice non è
+stata ancora aggiunta al repository con i permessi necessari. Il commit resta
+quindi disponibile nella copia locale fino alla concessione dell'accesso.
