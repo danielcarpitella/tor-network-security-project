@@ -278,6 +278,13 @@ RUN_ID=run_01 NUM_REQUESTS=100 \
 
 Il generatore salva il log client in
 `experiments/onion-correlation/results/run_01/client_requests_log.csv`.
+Lo script usa il proxy SOCKS `socks5h://127.0.0.1:9050` se
+`TOR_SOCKS_PROXY` non è impostata, attende un intervallo casuale di 2-5
+secondi tra le richieste e applica un timeout di 30 secondi a ciascuna
+richiesta. Il CSV registra ID, timestamp iniziale e finale, latenza,
+dimensione della risposta, stato HTTP, esito ed eventuale messaggio di errore.
+La cartella di output è specifica per `RUN_ID`; se esiste già, lo script
+interrompe l'esecuzione senza sovrascriverla.
 Al termine delle 100 richieste, fermare **entrambi** i processi `tcpdump`
 premendo `Ctrl+C` nei rispettivi terminali. Attendere che ciascuno mostri il
 riepilogo e chiuda il file PCAP prima di copiarlo.
@@ -417,55 +424,93 @@ generati da `tshark` in `results/<run_id>/analysis/window_5s/`. Per ciascuna
 osservazione (Guard client e Guard del servizio), i pacchetti TCP sulla porta
 OR `9001` sono stati raggruppati in burst: inizia un nuovo burst quando
 cambia la direzione del traffico o quando il distacco temporale dal pacchetto
-precedente supera `0,1 s`.
+precedente supera `0,1 s`. Sono mantenuti burst di almeno `1000 byte`.
+L'analisi usa cinque run (`run_01`-`run_05`), con 100 richieste riuscite per
+run; gli indirizzi dei Guard sono `10.5.184.229` (client) e `10.5.237.145`
+(service).
 
-Per il matching esplorativo sono stati considerati i burst di almeno
-`1000 byte` e una differenza tra gli orari iniziali compresa tra `-0,1 s` e
-`+0,5 s` (orario del burst service meno orario del burst client). Il matching
-è uno-a-uno e greedy: per ogni burst client, in ordine cronologico, seleziona
-il burst service disponibile temporalmente più vicino entro questi limiti.
-Questi parametri sono scelte esplorative, non soglie calibrate.
+I burst client vengono esaminati in ordine cronologico; ciascuno è abbinato
+al burst service non ancora usato più vicino entro la finestra di lag
+`[-0,1 s, +0,5 s]` (inizio service meno inizio client). Il matching è
+strettamente uno-a-uno. I controlli sono lo spostamento della traccia service
+della stessa run di 10, 20, 30, 40 o 50 secondi (media dei cinque
+spostamenti) e il confronto con la traccia service di ciascuna delle altre
+quattro run, allineata al primo timestamp di richiesta (media delle quattro
+run). Una richiesta è coperta se la sua finestra temporale estesa dai margini
+di lag contiene almeno un inizio di burst client abbinato. I parametri sono
+scelte manuali, non soglie calibrate.
 
-Per ogni run, il CSV delle richieste client e il log `server_access.log`
-contengono 100 record coerenti con richieste riuscite. L'attribuzione
-temporale usa finestre derivate dagli intervalli delle richieste confermate e
-dagli stessi margini di lag; un abbinamento è definito *coerente con la
-finestra* quando i due burst ricadono nella stessa finestra di richiesta.
+### Risultati per run
 
-| Run | Burst client rilevanti | Burst service rilevanti | Coppie candidate | Coppie coerenti con la stessa finestra | Richieste rappresentate |
+| Run | Burst client | Burst service | Coppie reali | Coppie reali % | Controllo shift % | Controllo cross-run % | Richieste coperte | Coperte, shift (media) | Coperte, cross-run (media) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `run_01` | 179 | 173 | 167 | 93,3 | 9,7 | 12,6 | 82/100 | 8,8 | 11,0 |
+| `run_02` | 413 | 199 | 177 | 42,9 | 8,1 | 11,8 | 83/100 | 15,8 | 17,5 |
+| `run_03` | 400 | 198 | 180 | 45,0 | 6,1 | 9,9 | 90/100 | 12,2 | 13,2 |
+| `run_04` | 218 | 314 | 174 | 79,8 | 10,4 | 15,0 | 86/100 | 11,4 | 15,5 |
+| `run_05` | 298 | 493 | 176 | 59,1 | 9,3 | 10,1 | 88/100 | 13,2 | 14,5 |
+| **Totale** | **1508** | **1377** | **874** | **58,0** | **8,3** | **11,5** | **429/500** | **61,4** | **71,8** |
+
+La mediana pooled del lag delle coppie reali è `-0,0008 s`. Le percentuali
+sono statistiche di timing: indicano la quota di burst client che trova un
+partner, non precision, recall o accuratezza. La copertura reale è `429/500`
+(85,8%); la sensibilità riportata sotto confronta questa misura con i
+controlli.
+
+### Sensibilità a lag e direzione
+
+I valori sono pooled sulle cinque run. Nei controlli, le percentuali di coppie
+sono calcolate rispetto ai burst client; la copertura è la quota di richieste.
+
+| Finestra di lag | Direzione | Coppie reali % | Shift % | Cross-run % | Richieste coperte % | Copertura cross-run % |
+|---|---|---:|---:|---:|---:|---:|
+| da `-0,1` a `+0,5 s` | any / same / opposite | 58,0 | 8,3 | 11,5 | 85,8 | 14,4 |
+| da `-0,05` a `+0,05 s` | any / same / opposite | 57,9 | 1,5 | 2,6 | 85,8 | 3,1 |
+| da `-0,02` a `+0,02 s` | any | 57,8 | 0,8 | 1,5 | 85,8 | 1,8 |
+| da `-0,02` a `+0,02 s` | same / opposite | 57,8 / 57,7 | 0,8 | 1,5 | 85,8 | 1,7 / 1,8 |
+
+Ridurre la finestra a `±0,05 s` o `±0,02 s` lascia quasi invariata la quota
+reale di coppie e copertura delle richieste, mentre riduce i valori di
+controllo. La direzione dei pacchetti (`any`, `same`, `opposite`) non cambia
+materialmente i risultati.
+
+### Diagnostica e limiti interpretativi
+
+La tabella riporta i burst dentro le finestre di richiesta, quelli tra
+richieste e i frame conteggiati nei due CSV di metadati:
+
+| Run | Burst client per richiesta | Burst service per richiesta | Burst client tra richieste | Burst service tra richieste | Pacchetti client / service |
 |---|---:|---:|---:|---:|---:|
-| `run_01` | 179 | 173 | 167 | 167/167 (100,0%) | 82/100 (82,0%) |
-| `run_02` | 413 | 199 | 177 | 173/177 (97,7%) | 83/100 (83,0%) |
-| `run_03` | 400 | 198 | 180 | 180/180 (100,0%) | 90/100 (90,0%) |
-| `run_04` | 218 | 314 | 174 | 174/174 (100,0%) | 86/100 (86,0%) |
-| `run_05` | 298 | 493 | 176 | 176/176 (100,0%) | 88/100 (88,0%) |
+| `run_01` | 1,79 | 1,67 | 0 | 6 | 1656 / 1482 |
+| `run_02` | 3,93 | 1,79 | 20 | 20 | 3921 / 1738 |
+| `run_03` | 4,00 | 1,80 | 0 | 18 | 2979 / 1520 |
+| `run_04` | 2,18 | 3,14 | 0 | 0 | 1650 / 2439 |
+| `run_05` | 2,95 | 2,63 | 3 | 230 | 2606 / 2806 |
 
-Nel complesso risultano 874 coppie candidate, di cui 870 coerenti con la
-stessa finestra di richiesta (`99,5%` secondo questa regola temporale). Le
-coppie coprono 429 richieste distinte su 500 (`85,8%` di copertura
-request-window); il valore è la somma degli ID di richiesta rappresentati
-nelle cinque run, non una misura di precisione. Il lag tra gli inizi dei burst
-abbinati ha mediana pooled `-0,001 s` e 95° percentile `0,003 s`. La copertura
-dei burst filtrati è `58,0%` per il lato client e `63,5%` per il lato service.
+I run `run_02` e `run_03` hanno più burst client per richiesta e circa il
+doppio dei pacchetti rispetto al service; quasi tutti i burst client ricadono
+nelle finestre di richiesta e ogni Guard ha 10-11 peer IP distinti. I dati
+non confermano la causa dei burst aggiuntivi. In `run_05` la diagnostica
+mostra inoltre 230 burst service tra le richieste; il report segnala un
+episodio concentrato intorno a `t = 275 s` con dimensione mediana di circa
+`3,3 kB`.
 
-Il notebook produce inoltre un istogramma dei lag e un grafico per run che
-confronta le 100 richieste confermate nei log con quelle rappresentate da
-almeno una coppia coerente con la finestra.
+Tra le 71 richieste non coperte, 46 non hanno un burst client grande, 71 non
+hanno un burst service grande e nessuna ha burst grandi su
+entrambi i lati ma senza coppia. Questi conteggi dipendono dal filtro di
+`1000 byte` e dalle finestre temporali.
 
-**Interpretazione e limiti.** Le finestre sono definite usando timestamp e
-margini temporali provvisori; la coerenza con una finestra non dimostra che
-una richiesta abbia causato una specifica coppia di burst. Il traffico
-catturato può includere attività Tor di fondo o altri circuiti; inoltre la
-dimensione del burst è la dimensione dei frame catturati, non la dimensione
-del payload HTTP. Pertanto le percentuali riportate sono metriche esplorative
-di copertura e compatibilità temporale: non sono precision, recall,
-accuratezza, né prova di de-anonimizzazione o di affidabilità dell'attacco.
-
-Lo script facoltativo `analyze_bursts.py` può produrre CSV separati con
-riepiloghi dei burst dai PCAPNG ritagliati. Non è un passaggio necessario per
-questi risultati: il notebook effettua direttamente il raggruppamento dei
-pacchetti dai CSV di metadati e svolge il matching e l'attribuzione alle
-finestre di richiesta.
+**Conclusione e limiti.** I dati mostrano una correlazione temporale in
+questa configurazione: con la finestra stretta `±0,05 s`, il 58% circa dei
+burst client è abbinato nel dato reale contro l'1,5-2,6% nei controlli, e
+l'85,8% delle richieste è coperto contro il 3,1% nel controllo cross-run.
+Il lag mediano è vicino a zero, ma l'esperimento usa una sola macchina e un
+solo clock, una pagina molto semplice, un solo client e un solo service;
+non riproduce latenza e differenze di clock della rete Tor pubblica. I burst
+sono dimensioni dei frame catturati (incluse celle Tor/TLS), non payload HTTP.
+I log forniscono ground truth a livello di richiesta con risoluzione di un
+secondo, non etichette individuali per burst. Le percentuali non sono
+precision, recall o accuratezza e non provano la de-anonimizzazione.
 
 ## 9. Passi ancora aperti per il contributo onion (Persona B)
 
