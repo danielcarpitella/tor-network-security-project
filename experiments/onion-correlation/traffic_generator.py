@@ -26,7 +26,9 @@ if NUM_REQUESTS < 1:
 
 MIN_SLEEP = 2.0
 MAX_SLEEP = 5.0
-RUN_ID = os.getenv("RUN_ID", "run_08")
+RUN_ID = os.getenv("RUN_ID")
+if not RUN_ID:
+    raise ValueError("Set RUN_ID, e.g. RUN_ID=run_01")
 if not re.fullmatch(r"[A-Za-z0-9_-]+", RUN_ID):
     raise ValueError("RUN_ID may contain only letters, numbers, underscores, and hyphens")
 

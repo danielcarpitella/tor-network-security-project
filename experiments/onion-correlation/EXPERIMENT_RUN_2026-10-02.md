@@ -269,6 +269,22 @@ richieste.
 
 ### 7.3 Generazione delle richieste
 
+> **Per riprodurre l'esperimento:** prima di lanciare lo script bisogna
+> sostituire in `experiments/onion-correlation/traffic_generator.py` il valore
+> di `ONION_URL` con l'indirizzo onion della propria rete. L'indirizzo viene
+> generato alla creazione dell'onion service e cambia ogni volta che container
+> o volume vengono ricreati, quindi quello scritto nello script vale solo per
+> la rete originale. Senza questa modifica tutte le richieste vanno in timeout.
+> L'indirizzo è il contenuto del file `hostname` del servizio nascosto:
+>
+> ```bash
+> docker exec testing-tor-hs-NOME cat /var/lib/tor/.tor/hs/hostname
+> ```
+>
+> Nello script scrivere `ONION_URL = "http://<indirizzo>.onion/"`, con
+> `http://` e la `/` finale. Passare sempre `RUN_ID` (il valore predefinito
+> dello script è `run_08`).
+
 Con le due catture attive, dal terminale principale è stato lanciato:
 
 ```bash
@@ -489,16 +505,35 @@ richieste e i frame conteggiati nei due CSV di metadati:
 
 I run `run_02` e `run_03` hanno più burst client per richiesta e circa il
 doppio dei pacchetti rispetto al service; quasi tutti i burst client ricadono
-nelle finestre di richiesta e ogni Guard ha 10-11 peer IP distinti. I dati
-non confermano la causa dei burst aggiuntivi. In `run_05` la diagnostica
-mostra inoltre 230 burst service tra le richieste; il report segnala un
-episodio concentrato intorno a `t = 275 s` con dimensione mediana di circa
-`3,3 kB`.
+nelle finestre di richiesta (non sono quindi traffico tra una richiesta e
+l'altra). La tabella dei pacchetti per peer mostra che in quei run il Guard
+client scambia circa 2,5 volte più pacchetti con altri relay che con il
+container client (rapporto 2,72 in `run_02`, 2,53 in `run_03`, contro 1,05 in
+`run_01`); lo stesso accade al Guard service in `run_04` (2,43) e in parte in
+`run_05`. Un rapporto vicino a 1 è atteso per un Guard che inoltra solo il
+traffico del proprio circuito, quindi i dati sono compatibili con un Guard che
+trasporta anche traffico di altri circuiti: la rete ha pochi relay (5 relay, 3
+exit, 3 DA che fanno anche da relay) e gli stessi nodi possono comparire in più
+posizioni. Questa spiegazione **non è ancora confermata** da dati sui circuiti
+(`GETINFO circuit-status`). In `run_05` la diagnostica mostra inoltre 230 burst
+service tra le richieste, concentrati intorno a `t = 275 s` con dimensione
+mediana di circa `3,3 kB`; la causa non è stata determinata.
 
-Tra le 71 richieste non coperte, 46 non hanno un burst client grande, 71 non
-hanno un burst service grande e nessuna ha burst grandi su
-entrambi i lati ma senza coppia. Questi conteggi dipendono dal filtro di
-`1000 byte` e dalle finestre temporali.
+**Collegamento diretto tra i due Guard.** I due Guard si scambiano anche
+pacchetti tra loro: 657 in `run_03`, 118 in `run_04`, 18 in `run_02`, 8 in
+`run_01`, 6 in `run_05`. Le stesse catture contengono questi pacchetti con gli
+stessi timestamp, quindi possono abbinarsi in modo banale e gonfiare la
+correlazione, soprattutto in `run_03` e `run_04`. Il notebook (sezione 7) ripete l'analisi senza questi pacchetti; i risultati vanno riportati qui dopo l'esecuzione (salvati in  onion_robustness_link.csv e  onion_robustness_size.csv).
+
+Senza questi pacchetti (103 burst client in meno, da 1508 a 1405) la quota di burst abbinati scende dal 57,9% al 54,8% con la finestra `±0,05 s`, i controlli restano all'1,6% (shift) e al 2,4% (cross-run) e la copertura delle richieste resta all'85,8% (3,1% nel controllo cross-run). Il collegamento diretto gonfia quindi leggermente l'abbinamento ma non spiega la correlazione, che resta circa 23 volte sopra il controllo cross-run.
+
+Le 71 richieste non coperte non hanno nessun burst service da almeno `1000
+byte` nella propria finestra (46 non lo hanno nemmeno lato client), e nessuna
+ha burst grandi su entrambi i lati senza coppia. Hanno comunque circa 13
+burst più piccoli per lato. La mancata copertura dipende quindi dal filtro di
+`1000 byte`, non dalla regola temporale; il notebook (sezione 7) ripete
+l'analisi con soglie da 0 a 1500 byte, i cui risultati vanno confrontati con i
+controlli prima di cambiare soglia.
 
 **Conclusione e limiti.** I dati mostrano una correlazione temporale in
 questa configurazione: con la finestra stretta `±0,05 s`, il 58% circa dei
@@ -518,6 +553,18 @@ L'acquisizione delle cinque run, l'analisi e la documentazione del contributo
 onion sono state completate. I passi ancora aperti riguardano l'integrazione
 con il lavoro degli altri membri e, solo se richiesto, un'estensione della
 validazione:
+
+### Verifiche ancora aperte
+
+- Confermare con `GETINFO circuit-status` (ControlPort dei due container,
+  durante una run) se i circuiti di client e service condividono relay, come
+  suggerisce la tabella dei pacchetti per peer.
+- Controllare i log del container dell'onion service intorno a `t = 275 s` di
+  `run_05` (`docker logs --since`); se i log non ci sono più, annotare "causa
+  non determinata".
+- Eseguire la sezione 7 del notebook (esclusione del collegamento diretto tra
+  Guard e soglie sulla dimensione dei burst) e riportare i risultati in
+  `ONION_CORRELATION_REPORT.md` (sezione 4.6) e nella sezione 8.
 
 ### Da fare per l'integrazione nel progetto di gruppo
 
