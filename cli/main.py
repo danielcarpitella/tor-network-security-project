@@ -108,7 +108,7 @@ def add_hs(
 
 @container_app.command("add-client")
 def add_client(
-    count: int = typer.Option(1, help="Number of containers to create"), port: Optional[int] = typer.Option(None, help="TOR SOCKSv5 port to expose on the host")
+    count: int = typer.Option(1, help="Number of containers to create"), port: Optional[int] = typer.Option(None, help="TOR SOCKSv5 port to expose on the host (bound to 127.0.0.1 only)")
 ):
     """
     Add a client to the network.

@@ -53,8 +53,10 @@ def create_container(
         ip_addr = str(ipaddress.ip_address(random.randint(first_ip, last_ip)))
 
     # Setup ports
+    # Publish the SOCKS port on the host loopback only: binding to all interfaces would let anyone
+    # on the network use the client (and the exits) as an open proxy. Use an SSH tunnel for remote access.
     if exposed_client_port:
-        host_config = docker_client.api.create_host_config(binds=["testing-tor:/status"], port_bindings={9050: exposed_client_port})
+        host_config = docker_client.api.create_host_config(binds=["testing-tor:/status"], port_bindings={9050: ("127.0.0.1", exposed_client_port)})
     else:
         host_config = docker_client.api.create_host_config(binds=["testing-tor:/status"])
 
