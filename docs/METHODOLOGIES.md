@@ -32,23 +32,23 @@ abbia ricevuto la richiesta.
 
 ## Regole di aggregazione e matching usate nell'analisi onion
 
-Questi sono i valori e le regole adottati nel notebook onion; usarli anche
-nell'analisi clearnet quando l'obiettivo è un confronto quantitativo diretto.
-Se il modello clearnet richiede una scelta diversa, mantenerla documentata e
-separare chiaramente i risultati invece di presentarli come direttamente
-equivalenti.
+L'elenco seguente descrive la configurazione iniziale del report completo.
+Il [report sintetico](../experiments/onion-correlation/ONION_CORRELATION_MINIMAL.md)
+riporta una configurazione diversa. Per un eventuale confronto, indicate
+quale tabella onion usate come riferimento e dichiarate i parametri effettivi
+e le differenze tra gli scenari.
 
 - Ordinare i frame per timestamp separatamente per ciascun punto di
-  osservazione.
+osservazione.
 - Iniziare un nuovo burst se il distacco dal frame precedente è maggiore di
-  **0,1 secondi** oppure se cambia `direction`.
+**0,1 secondi** oppure se cambia `direction`.
 - Considerare per il matching i burst con `total_size >= 1000` byte.
 - Usare un intervallo di lag da **-0,1 a +0,5 secondi**, definito come
-  timestamp del secondo punto meno timestamp del primo.
+timestamp del secondo punto meno timestamp del primo.
 - Applicare matching **uno-a-uno greedy**: per ogni burst del primo punto, in
-  ordine cronologico, scegliere il burst disponibile del secondo punto con
-  lag ammesso più vicino in valore assoluto; non riutilizzare un burst già
-  abbinato.
+ordine cronologico, scegliere il burst disponibile del secondo punto con
+lag ammesso più vicino in valore assoluto; non riutilizzare un burst già
+abbinato.
 
 Le soglie sono parametri esplorativi usati per l'analisi, non soglie
 scientificamente calibrate. La dimensione dei burst è quella dei frame
@@ -63,7 +63,7 @@ Per ogni topologia e run riportare almeno:
 - numero di coppie candidate e lag tra i burst abbinati;
 - copertura dei burst su entrambi i punti di osservazione;
 - richieste distinte rappresentate da almeno una coppia, se l'attribuzione ai
-  log è possibile senza ambiguità.
+log è possibile senza ambiguità.
 
 Usare le stesse definizioni per le metriche in entrambi gli scenari e
 riportare numeratori e denominatori. La compatibilità temporale con una

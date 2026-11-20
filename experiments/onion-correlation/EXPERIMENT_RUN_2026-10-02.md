@@ -282,8 +282,7 @@ richieste.
 > ```
 >
 > Nello script scrivere `ONION_URL = "http://<indirizzo>.onion/"`, con
-> `http://` e la `/` finale. Passare sempre `RUN_ID` (il valore predefinito
-> dello script è `run_08`).
+> `http://` e la `/` finale. Il generatore richiede `RUN_ID`.
 
 Con le due catture attive, dal terminale principale è stato lanciato:
 
@@ -568,17 +567,11 @@ validazione:
 
 ### Da fare per l'integrazione nel progetto di gruppo
 
-- Condividere con Persona A e Persona C le convenzioni in
-  [`../../docs/METHODOLOGIES.md`](../../docs/METHODOLOGIES.md) e chiarire che
-  i punti osservati differiscono: Guard client–Guard service per onion,
-  Guard client–Exit relay per clearnet.
-- Fornire a Persona C una tabella esportabile dei risultati per run, usando
-  le stesse definizioni e unità concordate. Se le feature o i parametri di
-  Persona A differiscono, annotare le differenze e non presentare i numeri
-  come direttamente equivalenti.
-- Verificare con Persona C quali output e formato servono alla comparazione
-  finale; i risultati attuali sono nel notebook e nel presente diario, ma non
-  è stato aggiunto un file tabellare dedicato all'interscambio.
+- Fare riferimento alle [convenzioni metodologiche](../../docs/METHODOLOGIES.md)
+  per unità, punti osservati e formato del riepilogo.
+- Se il gruppo conferma il confronto tra scenari, il notebook completo
+  esporta `onion_summary.csv` con i risultati per run. Annotare eventuali
+  differenze rispetto ai parametri clearnet.
 
 ### Estensione facoltativa: etichette più forti a livello di burst
 

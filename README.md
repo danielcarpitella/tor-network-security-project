@@ -14,7 +14,7 @@ In docs/PROJECT_PLAN.md c'è una sorta di docuemntazione generale di tutto il pr
 Boh dovrebbe essere tutto.
 
 
-- la cartella/parte di Carpi è experiment/clearnet-correlation
+- la cartella/parte di Carpi è experiments/clearnet-correlation
 
 
 ## Base condivisa ed esperimenti
@@ -39,8 +39,15 @@ comune:
   tra guard del client ed exit relay nello scenario clearnet;
 - [`onion-correlation/`](experiments/onion-correlation/) — correlazione tra
   guard del client e guard del servizio onion;
-- [`topology-comparison/`](experiments/topology-comparison/) — confronto tra
-  scenari e topologie.
+- [`topology-comparison/`](experiments/topology-comparison/) — spazio per il
+  possibile confronto tra scenari e topologie. Il terzo contributo è da
+  confermare.
+
+Le [convenzioni metodologiche](docs/METHODOLOGIES.md) descrivono le misure
+condivise e indicano quale versione dell’analisi onion leggere come riferimento.
+
+Per preparare il report finale, consultare le
+[indicazioni di consegna e il PDF del docente](docs/PROJECT_PLAN.md#consegna-e-report-finale).
 
 ## Basi teoriche essenziali
 

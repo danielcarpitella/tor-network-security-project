@@ -154,7 +154,7 @@ Still open:
    docker exec testing-tor-hs-<name> cat /var/lib/tor/.tor/hs/hostname
    ```
    If the address is wrong or outdated, every request fails with a timeout and the run is useless.
-3. Start the two `tcpdump` captures, then generate the requests, always passing the run name (the script's default `RUN_ID` is `run_08`):
+3. Start the two `tcpdump` captures, then generate the requests, passing the required `RUN_ID`.
    ```bash
    RUN_ID=run_01 NUM_REQUESTS=100 python experiments/onion-correlation/traffic_generator.py
    ```
@@ -165,6 +165,6 @@ Still open:
 ## 9. Notes for the group report
 
 - Onion observes Guard client + Guard service; clearnet observes Guard client + Exit relay. The numbers are not directly comparable unless features and parameters are aligned with Person A.
-- Hand `onion_summary.csv` to Person C with the definitions from section 3.
+- For a possible comparison, use `onion_summary.csv` with the definitions from section 3.
 - Before presenting numbers, confirm which lag window is used (recommended +/-0.05 s) and update section 4.1 if the notebook is rerun with it.
 - Mention the shared-link caveat (section 4.4) when comparing with the clearnet experiment, where the observation points are Guard client and Exit relay.

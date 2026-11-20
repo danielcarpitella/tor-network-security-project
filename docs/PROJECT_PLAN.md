@@ -11,7 +11,7 @@ Per riprodurre prima le due prove di base, seguire
 
 ## Obiettivo
 
-Costruire e usare una rete Tor privata, interamente isolata in Docker, per
+Costruire e usare una rete Tor privata su reti Docker dedicate per
 confrontare la correlabilità statistica dei flussi in due casi:
 
 1. un servizio HTTP clearnet interno raggiunto tramite exit relay;
@@ -32,7 +32,7 @@ shared-base/                    Base di laboratorio riusabile da tutti
 experiments/
   clearnet-correlation/README.md Persona A: correlazione GuardClient–ExitRelay
   onion-correlation/README.md   Persona B: correlazione GuardClient–GuardService
-  topology-comparison/README.md Persona C: confronto tra scenari e topologie
+  topology-comparison/README.md Possibile confronto tra scenari e topologie
 docs/
   GETTING_STARTED.md            Setup e riproduzione delle due prove base
   PROJECT_PLAN.md               Obiettivo, ruoli e convenzioni
@@ -94,8 +94,7 @@ La procedura condivisa comprende:
 
 I comandi e i controlli di salute sono in
 [`GETTING_STARTED.md`](GETTING_STARTED.md). Le configurazioni che consentono
-HTTP o destinazioni private sono esclusivamente per questa rete Docker
-isolata.
+HTTP o destinazioni private sono destinate alla rete Docker del laboratorio.
 
 ## Contributi individuali
 
@@ -115,42 +114,24 @@ Genera traffico verso l'onion service e confronta osservazioni sul guard del
 client e sul guard del servizio. I log del servizio restano separati come
 ground truth.
 
-### Persona C — Confronto quantitativo e impatto della topologia
+### Persona C — Proposta da confermare
 
-Lavora in
-[`experiments/topology-comparison/`](../experiments/topology-comparison/).
-
-Confronta i due scenari variando, in modo controllato, numero di relay,
-dimensione dei file, frequenza delle richieste, numero di circuiti o durata
-delle sessioni. Riusa gli output degli esperimenti A e B invece di duplicarne
-il matching.
+Il piano attuale propone un confronto quantitativo tra scenari e topologie
+in [`experiments/topology-comparison/`](../experiments/topology-comparison/).
+Se il gruppo conferma la proposta, il contributo potrà riusare i risultati
+delle parti clearnet e onion e studiare l'effetto di variazioni controllate,
+come il numero di relay o la dimensione delle risposte HTTP.
 
 ## Dati, metriche e risultati
 
-Quando inizierà la fase sperimentale, ogni run dovrà conservare separatamente:
+Le [convenzioni metodologiche condivise](METHODOLOGIES.md) descrivono dati,
+unità e risultati da registrare per ogni run. Il riepilogo riporta le richieste
+tentate e confermate, la copertura dei burst e delle richieste con i rispettivi
+denominatori e, quando disponibile, il risultato del controllo.
 
-- osservazioni disponibili all'attaccante;
-- ground truth;
-- configurazione della topologia;
-- parametri del traffico e identificatore della sessione;
-- risultato del matching.
-
-Le metriche comuni minime sono:
-
-- precision e recall;
-- falsi positivi;
-- percentuale di matching corretto;
-- latenza e overhead;
-- stabilità dei circuiti.
-
-Le feature da considerare includono byte trasmessi, direzione, durata, burst e
-intervalli temporali. I risultati derivati devono stare nelle cartelle
-`results/` degli esperimenti, che non sono versionate.
-
-Prima di implementare generatori di traffico, packet capture o matching, il
-gruppo deve concordare un formato comune per metadati, feature e risultati:
-questo è necessario affinché Persona C possa confrontare correttamente i due
-scenari.
+Precision e recall richiedono etichette indipendenti per le associazioni
+valutate. I log HTTP attestano le richieste e restano il riferimento a livello
+di richiesta. Le cartelle `results/` degli esperimenti sono escluse da Git.
 
 ## Limiti del laboratorio
 
@@ -161,12 +142,28 @@ scenari.
 - Le conclusioni devono essere presentate come risultati sperimentali del
   laboratorio, non come valutazioni della sicurezza della rete Tor pubblica.
 
-## Stato iniziale
+## Stato attuale
 
-- Rete Tor privata, CLI e immagini Docker funzionanti.
-- Prova onion service verificata con richiesta HTTP tramite SOCKS5.
-- Prova clearnet interna verificata con server HTTP che osserva l'exit relay
-  come peer TCP.
-- Packet capture, generazione controllata del traffico, analisi e matching non
-  sono ancora implementati.
+- La guida documenta le prove HTTP di base, sia onion via SOCKS5 sia clearnet
+  via exit relay.
+- Il contributo onion documenta cinque run da 100 richieste, con diario,
+  notebook e [report sintetico](../experiments/onion-correlation/ONION_CORRELATION_MINIMAL.md).
+- Il contributo clearnet ha completato la prova di connettività e la
+  [verifica preliminare della raccolta dati](../experiments/clearnet-correlation/README.md#verifica-preliminare-della-raccolta-dati).
+  La fase sperimentale quantitativa è da svolgere.
+- Il terzo contributo è da confermare. Il confronto tra topologie resta
+  l'ipotesi descritta nel piano.
 
+## Consegna e report finale
+
+Prima di scrivere o revisionare il report, consultare
+[`main (1).pdf`](../../main%20%281%29.pdf), *Network Security: Project How-to*
+di Leonardo Maccari. Le sezioni 1.1 e 1.2 descrivono i materiali e il formato
+della consegna, la sezione 2.0.1 il tema Tor, la sezione 3 i criteri di
+valutazione e la sezione 4 il modello del report.
+
+La consegna prevede un PDF indicativamente di 5–10 pagine, esclusi gli
+allegati, il codice sorgente se prodotto e un allegato che descriva i
+contributi individuali. Per la discussione va preparata una demo del codice.
+Il PDF del docente si trova nella cartella che contiene il repository.
+Se si lavora da un clone separato, recuperarlo dai materiali del corso.

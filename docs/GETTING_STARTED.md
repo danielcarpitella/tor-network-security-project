@@ -26,10 +26,14 @@ flowchart LR
     middleService --> rendezvous
 ```
 
-### Clearnet interno
+```
+Clearnet interno
+```
 
+```
 Il target HTTP è su una seconda LAN Docker. Solo l'exit relay appartiene a
 entrambe le reti, quindi il client non può raggiungere direttamente il server.
+```
 
 ```mermaid
 flowchart LR
@@ -282,12 +286,8 @@ La prova clearnet interna ha restituito:
 <h1>Private clearnet target</h1>
 ```
 
-Il server HTTP ha registrato l'indirizzo dell'exit relay come peer. Questo
-conferma il percorso:
-
-```text
-Client → Guard → Middle → Exit → Server HTTP
-```
+Il server HTTP ha registrato l'indirizzo dell'exit relay come peer. La prova
+documenta il passaggio della richiesta attraverso l'exit.
 
 Per obiettivi di progetto e divisione del lavoro, consultare
 [`PROJECT_PLAN.md`](PROJECT_PLAN.md).
