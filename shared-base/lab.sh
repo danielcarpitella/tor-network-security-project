@@ -4,7 +4,7 @@
 # Usage (from anywhere, with the project venv created in .venv/):
 #   ./shared-base/lab.sh up         create DAs, relays, exits, onion service, client, clearnet target, and test both scenarios
 #   ./shared-base/lab.sh status     show containers, IPs, consensus, onion address
-#   ./shared-base/lab.sh onion-web  (re)start the web server inside the onion service, e.g. after a container restart
+#   ./shared-base/lab.sh onion-web  create the test files and (re)start the web server inside the onion service
 #   ./shared-base/lab.sh down       delete every lab container, the lab networks and the volume (keeps the Docker image)
 #
 # Topology is configurable with environment variables, e.g.:
@@ -17,6 +17,9 @@ EXIT_COUNT="${EXIT_COUNT:-3}"
 SOCKS_PORT="${SOCKS_PORT:-9050}"
 TOR_SUBNET="${TOR_SUBNET:-10.5.0.0/16}"
 ONION_PAGE='<h1>Hello from my private Tor network</h1>'
+# Extra files served by the onion service for the response-size experiments, as name:bytes.
+# Each one is served at http://<onion>/<name>.bin and filled with random bytes.
+ONION_FILES="${ONION_FILES:-10k:10000 100k:100000 1m:1000000}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -185,11 +188,24 @@ cmd_onion_web() {
     local hs
     hs=$(names hs | head -1)
     [ -n "$hs" ] || die "no running onion service container"
+
+    # Files are (re)created even when the server is already running, so ONION_FILES can be changed later.
+    # A file that already has the right size is kept as it is.
+    local f name bytes
+    docker exec "$hs" sh -c "mkdir -p /tmp/webroot && echo '$ONION_PAGE' > /tmp/webroot/index.html"
+    for f in $ONION_FILES; do
+        name=${f%%:*}
+        bytes=${f#*:}
+        [[ "$name" =~ ^[A-Za-z0-9_-]+$ && "$bytes" =~ ^[0-9]+$ ]] || die "bad entry '$f' in ONION_FILES (expected name:bytes, e.g. 1m:1000000)"
+        docker exec "$hs" sh -c "[ \"\$(stat -c %s /tmp/webroot/$name.bin 2>/dev/null)\" = $bytes ] || head -c $bytes /dev/urandom > /tmp/webroot/$name.bin"
+    done
+    log "Onion test files ready in $hs: / $(for f in $ONION_FILES; do printf '/%s.bin ' "${f%%:*}"; done)"
+
     if docker exec "$hs" pgrep -f http.server >/dev/null 2>&1; then
         log "Onion web server already running in $hs"
         return
     fi
-    docker exec -d "$hs" sh -c "mkdir -p /tmp/webroot && echo '$ONION_PAGE' > /tmp/webroot/index.html && cd /tmp/webroot && exec python3 -u -m http.server 80 >> /tmp/http_server.log 2>&1"
+    docker exec -d "$hs" sh -c "cd /tmp/webroot && exec python3 -u -m http.server 80 >> /tmp/http_server.log 2>&1"
     log "Onion web server started in $hs (log: /tmp/http_server.log)"
 }
 
@@ -237,6 +253,7 @@ cmd_status() {
     fi
     if [ -n "$hs" ]; then
         printf 'Onion address:  http://%s/\n' "$(docker exec "$hs" cat /var/lib/tor/.tor/hs/hostname 2>/dev/null)"
+        printf 'Onion files:    %s\n' "$(docker exec "$hs" sh -c 'cd /tmp/webroot 2>/dev/null && for f in *; do printf "/%s (%s B)  " "$f" "$(stat -c %s "$f")"; done' 2>/dev/null)"
         if docker exec "$hs" pgrep -f http.server >/dev/null 2>&1; then
             printf 'Onion web log:  docker exec -it %s tail -f /tmp/http_server.log\n' "$hs"
         else
