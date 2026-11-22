@@ -3,3 +3,4 @@ cli/status.json
 .venv311/
 __pycache__/
 experiments/**/results/
+.vscode/

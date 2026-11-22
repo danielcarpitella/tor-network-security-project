@@ -5,6 +5,7 @@
 #   ./shared-base/lab.sh up         create DAs, relays, exits, onion service, client, clearnet target, and test both scenarios
 #   ./shared-base/lab.sh status     show containers, IPs, consensus, onion address
 #   ./shared-base/lab.sh onion-web  create the test files and (re)start the web server inside the onion service
+#   ./shared-base/lab.sh separate-guards  make sure client and onion service use different Guards (fixes it if not)
 #   ./shared-base/lab.sh down       delete every lab container, the lab networks and the volume (keeps the Docker image)
 #
 # Topology is configurable with environment variables, e.g.:
@@ -97,6 +98,21 @@ router_flags() {
 }
 
 bootstrapped() { docker logs "$1" 2>&1 | contains 'Bootstrapped 100%'; }
+
+# Same, counting only the log lines written after the Unix time $2 (e.g. after a restart)
+bootstrapped_since() { docker logs --since "$2" "$1" 2>&1 | contains 'Bootstrapped 100%'; }
+
+# Nickname(s) of the first relay of the built circuits with purpose $2 in container $1, asked to its Tor
+# through the ControlPort (stem is in the image for nyx). HS_CLIENT_REND / HS_SERVICE_REND are the two halves
+# of the rendezvous circuit, which carries the traffic between client and onion service.
+first_relay() {
+    docker exec "$1" python3 -c "
+from stem.control import Controller
+with Controller.from_port(port=9051) as tor:
+    tor.authenticate()
+    print(' '.join(sorted({c.path[0][1] for c in tor.get_circuits() if c.status == 'BUILT' and c.path and c.purpose == '$2'})))
+"
+}
 
 onion_reachable() {
     curl -s -m 30 --socks5-hostname "127.0.0.1:$SOCKS_PORT" "http://$1/" | contains 'Hello from my private Tor network'
@@ -209,6 +225,40 @@ cmd_onion_web() {
     log "Onion web server started in $hs (log: /tmp/http_server.log)"
 }
 
+# The experiments watch the client's Guard and the onion service's Guard, so they must be two different relays.
+# With few relays in the lab they are often the same one. In that case the client is told to avoid that relay
+# (ExcludeNodes in its torrc, kept across restarts) and restarted, so Tor picks another Guard.
+cmd_separate_guards() {
+    local client hs onion cg sg since
+    client=$(names client | head -1)
+    hs=$(names hs | head -1)
+    [ -n "$client" ] && [ -n "$hs" ] || die "the client or the onion service container is not running"
+    onion=$(docker exec "$hs" cat /var/lib/tor/.tor/hs/hostname)
+
+    # A request builds the rendezvous circuits, whose first relays are the two Guards
+    wait_for "request to the onion service" 120 onion_reachable "$onion"
+    cg=$(first_relay "$client" HS_CLIENT_REND)
+    sg=$(first_relay "$hs" HS_SERVICE_REND)
+    [[ "$cg" =~ ^[a-z]+$ && "$sg" =~ ^[a-z]+$ ]] || die "expected one Guard per side, found client: '$cg', onion service: '$sg'"
+    if [ "$cg" != "$sg" ]; then
+        log "Guards already different: client $cg, onion service $sg. Nothing to do."
+        return
+    fi
+
+    log "Client and onion service both use $cg: telling the client to avoid it..."
+    # Tor keeps only the last ExcludeNodes line, so an existing one is extended instead of adding a second one
+    docker exec "$client" sh -c "if grep -q '^ExcludeNodes ' /etc/tor/torrc; then sed -i 's/^ExcludeNodes .*/&,$cg/' /etc/tor/torrc; else echo 'ExcludeNodes $cg' >> /etc/tor/torrc; fi"
+    since=$(date +%s)
+    docker restart "$client" >/dev/null
+    wait_for "client bootstrap after the restart" 300 bootstrapped_since "$client" "$since"
+    wait_for "request to the onion service" 120 onion_reachable "$onion"
+
+    cg=$(first_relay "$client" HS_CLIENT_REND)
+    [[ "$cg" =~ ^[a-z]+$ && "$cg" != "$sg" ]] || die "after the restart the client Guard is '$cg' (onion service: $sg)"
+    log "Done: client Guard $cg, onion service Guard $sg"
+    log "Client torrc now has: $(docker exec "$client" grep '^ExcludeNodes ' /etc/tor/torrc)"
+}
+
 cmd_status() {
     local c role ip hs client cons flags
     if [ -z "$(docker ps -a --filter name=testing-tor- -q)" ]; then
@@ -270,8 +320,9 @@ up) cmd_up ;;
 down) cmd_down ;;
 status) cmd_status ;;
 onion-web) cmd_onion_web ;;
+separate-guards) cmd_separate_guards ;;
 *)
-    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
