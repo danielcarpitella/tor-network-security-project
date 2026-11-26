@@ -8,9 +8,15 @@
 #   ./experiments/topology-comparison/run_test.sh baseline 5
 #   ./experiments/topology-comparison/run_test.sh size_1m 5 --page 1m.bin
 #   ./experiments/topology-comparison/run_test.sh smoke 2 --requests 5 --pause 1 2
+#   ./experiments/topology-comparison/run_test.sh clients_2 5 --clients 2    (after ./shared-base/lab.sh add-clients 1)
 #
 # The runs are called run_01, run_02, ... and saved in results/onion/<test>/ next to this script.
 # Every run of a test gets the same options, as analyze.py requires.
+#
+# The analysis is run twice:
+#   - all packets of the client's Guard: comparable with experiments/onion-correlation/;
+#   - --target-only (only the target client's packets on that side): comparable across tests with a different
+#     number of clients (--clients). Both tables are saved in the test folder, with different names.
 #
 # Resuming: a run that is already complete (its folder has run_info.json) is skipped, so after an interruption
 # the same command continues where it stopped. A run that was interrupted halfway has a folder without
@@ -19,7 +25,7 @@
 set -euo pipefail
 
 if [ $# -lt 2 ] || ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
-    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
 fi
 
@@ -40,5 +46,8 @@ for i in $(seq 1 "$runs"); do
 done
 
 echo
-echo "######## $test_name: analysis ########"
+echo "######## $test_name: analysis, all packets of the client's Guard ########"
 python "$HERE/analyze.py" "$HERE/results/onion/$test_name"
+echo
+echo "######## $test_name: analysis, target client only (--target-only) ########"
+python "$HERE/analyze.py" "$HERE/results/onion/$test_name" --target-only

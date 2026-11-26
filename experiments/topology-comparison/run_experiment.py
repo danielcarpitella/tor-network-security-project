@@ -8,21 +8,30 @@ PURPOSE
     A "test" is a group of runs with the same settings (e.g. test "size_1m" = 5 runs with the 1 MB file);
     analyze.py compares the runs of a test with each other, so every run of a test must use the same settings.
 
+    Multi-client tests (--clients N): the client whose Guard is watched is the TARGET (the user the attacker
+    is after). The other N-1 clients are BACKGROUND clients: during the run they send the same kind of requests
+    to the same onion service, so the service's Guard also carries other people's traffic. The question is
+    whether the target's traffic can still be linked. With --clients 1 (default) a run is exactly as before.
+
 REQUIREMENTS
     The lab running (./shared-base/lab.sh up), the project venv active, tshark installed on the host.
+    For --clients N > 1: N-1 background clients added with ./shared-base/lab.sh add-clients N-1.
 
 HOW IT WORKS, STEP BY STEP
     Before anything else: checks that docker and tshark exist, and that the run folder
     results/<scenario>/<test>/<run>/ does not exist yet (a run is never overwritten).
 
     Step 1 - Find the lab
-      1. Containers: lists the running containers named testing-tor-client-* and testing-tor-hs-*.
-         There must be exactly one of each (e.g. testing-tor-client-rxaojgqn, testing-tor-hs-kgumuaxx).
+      1. Containers: the target client is the running testing-tor-client-* container whose SOCKS port is
+         published on the host port in --socks (9050 = the client created by lab.sh up). Every other running
+         client is a background client; there must be exactly --clients clients in total. There must also be
+         exactly one onion service, testing-tor-hs-* (e.g. testing-tor-hs-kgumuaxx).
       2. Onion address: reads /var/lib/tor/.tor/hs/hostname inside the onion service container.
       3. Web server: checks that the web server started by lab.sh onion-web is running inside the onion service,
          and that the requested file exists in /tmp/webroot (index.html, the small page, if --page is not given).
-      4. Warm-up: sends one request, http://<onion>/<page>?id=warmup, through the client's SOCKS port,
+      4. Warm-up: sends one request, http://<onion>/<page>?id=warmup, through the target client's SOCKS port,
          so the client builds its rendezvous circuit. The requests of the run will reuse that circuit.
+         Same for each background client, through its own SOCKS port (this also checks that it works).
       5. Guards: asks each Tor process for its built circuits (a small Python program using stem, run inside
          the container with docker exec, talking to Tor's ControlPort 9051) and takes the first relay of the
          rendezvous circuit:
@@ -31,18 +40,24 @@ HOW IT WORKS, STEP BY STEP
          Lab naming rule: relay nickname = role + suffix of the container name. A Guard can be a directory
          authority (da): in the lab they also work as relays. Stops with an error if a side has no rendezvous
          circuit, or several first relays, or if both sides use the same Guard.
-      6. IPs: reads the IP of the client, the onion service and both Guards on the testing-tor network.
+         For the background clients the first relays are only recorded: one of them may share the target's
+         Guard, which is allowed (analyze.py --target-only keeps only the target's packets on that side).
+      6. IPs: reads the IP of every client, the onion service and both Guards on the testing-tor network.
       7. Preparation: creates the run folder and counts the lines already in the web server log
          (/tmp/http_server.log in the onion service), so that later it copies only the lines of this run.
 
-    Step 2 - Start the captures
+    Step 2 - Start the captures (and the background clients)
       Inside each Guard container, in the background, the same command:
           tcpdump -i any -nn -s 0 -U -w /tmp/capture_<scenario>_<test>_<run>_<side>.pcap 'tcp port 9001'
       It records every Tor packet the Guard sends or receives, to and from any neighbour (client, service,
       other relays, directory authorities), into a file inside the container; -U writes each packet at once.
       tcpdump's own messages (start-up lines and, at the end, its packet counters) go to tcpdump_<side>_guard.log.
-      After 2 s the script checks that both tcpdumps are still running, then waits 5 s, so the capture
-      starts well before the first request.
+      After 2 s the script checks that both tcpdumps are still running.
+      Then it starts one generator.py per background client, on the host, in the background: same page and
+      pauses as the target, through that client's SOCKS port, until it is told to stop (--until-stopped).
+      Their request ids are <run>-bg<k>-<n> (e.g. run_01-bg1-7), their logs go to background/.
+      Then it waits 5 s, so the capture starts well before the first request and the background clients
+      are already sending when the target starts.
 
     Step 3 - Send the requests (send_requests in generator.py)
       For each request i = 1 ... N:
@@ -56,12 +71,15 @@ HOW IT WORKS, STEP BY STEP
       Then waits 6 s, so the capture also covers the 5 s after the last request.
 
     Step 4 - Stop and collect
-      1. Stop: sends Ctrl+C (SIGINT, with pkill) to both tcpdumps; each one writes its packet counters and
-         closes its file properly. This also happens if the run fails or is stopped with Ctrl+C.
+      1. Stop: first the background clients (SIGTERM: each one finishes the request in progress, logs it and
+         exits, so their logs cover all the traffic they sent). Then Ctrl+C (SIGINT, with pkill) to both
+         tcpdumps; each one writes its packet counters and closes its file properly. This also happens if the
+         run fails or is stopped with Ctrl+C.
       2. Captures: copies the two .pcap files out of the containers (docker cp) as guard_client_capture.pcap
          and guard_service_capture.pcap, then deletes them inside the containers.
       3. Server log: copies the lines the web server wrote during the run to server_access.log, and counts
-         the ids of this run that it answered with status 200 ("confirmed by server").
+         the ids of this run that it answered with status 200 ("confirmed by server"), separately for the
+         target and for each background client.
       4. Guard re-check: asks both Tor processes again for their rendezvous circuits, to see whether
          the Guards changed during the run.
 
@@ -73,13 +91,15 @@ HOW IT WORKS, STEP BY STEP
          analysis/window_5s/service_metadata.csv. These two files are what the analysis reads.
       4. Checks, each one printed as a WARNING if it fails: packets in the window on both sides (none would mean
          different clocks), no packets dropped by tcpdump, every request successful, every successful request
-         confirmed by the server, no rendezvous circuits through other first relays after the run.
+         confirmed by the server, no rendezvous circuits through other first relays after the run; for each
+         background client: still running at the end, every request successful and confirmed by the server.
 
     Step 6 - Record
       Writes run_info.json: settings, containers, Guards and their IPs, the window, packets in the window,
       tcpdump's counters, the ExcludeNodes/EntryNodes lines of both torrc files, how many containers of each
-      role the lab has, the Tor version and the warnings. Then prints the summary: requests OK, confirmed by
-      server, packets in the window for each Guard, and the warnings.
+      role the lab has, the background clients (container, IP, SOCKS port, first relays, requests), the Tor
+      version and the warnings. Then prints the summary: requests OK, confirmed by server, packets in the
+      window for each Guard, the background clients' requests, and the warnings.
 
 DESIGN CHOICES (and why)
     * Guards are detected, not typed in. Each Tor process is asked for its circuits through its ControlPort
@@ -108,9 +128,20 @@ DESIGN CHOICES (and why)
       of the client's own log ("confirmed by server" in the summary).
     * tcpdump is always stopped, even on errors or Ctrl+C, so it never keeps running inside a Guard.
     * A run folder is never overwritten: reusing --test/--run that already exist is an error.
+    * Background clients are separate client containers, each with its own Tor, Guard and circuits, reached
+      through its own SOCKS port on the host. Several generators on the same SOCKS port would share one Tor
+      and even one circuit: that is one client, not several.
+    * --clients must match the lab exactly, so that a test is never recorded with another number of clients
+      by mistake (e.g. background clients left over from another test). It is saved in run_info.json, and
+      analyze.py warns if the runs of a test differ.
+    * Background clients send until the end of the run instead of a fixed number of requests, so the other
+      traffic is there during the whole capture window. They use the same page and pauses as the target:
+      only the number of clients changes between tests.
 
 OUTPUT  results/<scenario>/<test>/<run>/ next to this script (results/ is ignored by git)
     client_requests_log.csv                 ground truth: start/end time of every request (from generator.py)
+    background/bg<k>_requests_log.csv       the same for each background client (only with --clients > 1)
+    background/bg<k>_generator.log          what each background generator printed
     server_access.log                       web server log lines written during this run
     guard_client_capture.pcap               full capture on the client's Guard
     guard_service_capture.pcap              full capture on the onion service's Guard
@@ -124,6 +155,8 @@ EXAMPLES
     python experiments/topology-comparison/run_experiment.py --test baseline --run run_01
     python experiments/topology-comparison/run_experiment.py --test size_1m --run run_01 --page 1m.bin
     python experiments/topology-comparison/run_experiment.py --test smoke --run try_01 --requests 5 --pause 1 2
+    python experiments/topology-comparison/run_experiment.py --test clients_2 --run run_01 --clients 2
+        (after ./shared-base/lab.sh add-clients 1)
 """
 
 import argparse
@@ -148,11 +181,13 @@ SCENARIO = "onion"                    # --scenario: only onion for now
 PAGE = ""                             # --page: file requested from the onion service; "" = the small index page
 REQUESTS = 100                        # --requests: requests per run
 PAUSE = (2.0, 5.0)                    # --pause: random pause between requests, min and max seconds
-SOCKS = "socks5h://127.0.0.1:9050"    # --socks: SOCKS proxy of the Tor client, published on the host by lab.sh
+SOCKS = "socks5h://127.0.0.1:9050"    # --socks: SOCKS proxy of the target client, published on the host by lab.sh
+CLIENTS = 1                           # --clients: clients sending at the same time, target included (1 = no background)
 
 # Fixed settings
 MARGIN = 5.0                          # seconds kept before the first and after the last request
 TIMEOUT = 60                          # seconds, for a single request
+STOP_TIMEOUT = TIMEOUT + 10           # seconds a background client may take to finish its last request
 WEBROOT = "/tmp/webroot"              # folder served by the onion service (created by lab.sh onion-web)
 SERVER_LOG = "/tmp/http_server.log"   # its access log (written by lab.sh onion-web)
 
@@ -201,6 +236,39 @@ def the_only(role, what):
     if len(names) != 1:
         raise RunError(f"expected exactly 1 running {what} container (testing-tor-{role}-*), found {len(names)}: {names}")
     return names[0]
+
+
+def socks_url(port):
+    return f"socks5h://127.0.0.1:{port}"
+
+
+def published_socks_port(container):
+    """Host port on which the container's SOCKS port (9050 inside it) is published, or None."""
+    out = sh("docker", "inspect", "-f", '{{range $b := index .HostConfig.PortBindings "9050/tcp"}}{{$b.HostPort}} {{end}}',
+             container, check=False).split()
+    return int(out[0]) if out else None
+
+
+def find_clients(socks, expected):
+    """The target client (SOCKS port published on the port in `socks`) and the background clients (all the
+    other running clients), as (container, host port) pairs. The lab must have exactly `expected` clients."""
+    match = re.fullmatch(r"socks5h?://(127\.0\.0\.1|localhost):(\d+)/?", socks)
+    if not match:
+        raise RunError(f"--socks must look like {SOCKS}, got {socks!r}")
+    port = int(match[2])
+    ports = {c: published_socks_port(c) for c in containers("client")}
+    targets = [c for c, p in ports.items() if p == port]
+    if len(targets) != 1:
+        raise RunError(f"no running client publishes its SOCKS port on {port}. Clients and their ports: {ports}")
+    if len(ports) != expected:
+        raise RunError(f"--clients {expected}, but the lab has {len(ports)} running clients: {sorted(ports)}.\n"
+                       "Add or remove background clients (./shared-base/lab.sh add-clients N / remove-clients), or change --clients")
+    background = [(c, p) for c, p in sorted(ports.items()) if c != targets[0]]
+    unpublished = [c for c, p in background if p is None]
+    if unpublished:
+        raise RunError(f"background clients without a SOCKS port on the host: {unpublished}. Remove them with "
+                       "./shared-base/lab.sh remove-clients and add them again with add-clients")
+    return (targets[0], port), background
 
 
 def ip_of(container):
@@ -311,6 +379,61 @@ class Capture:
         sh("docker", "exec", self.guard, "rm", "-f", self.remote, check=False)
 
 
+# --- background clients ----------------------------------------------------------------------
+
+class Background:
+    """generator.py running on the host for one background client, until it is told to stop."""
+
+    def __init__(self, label, container, port, url, pause, run, folder):
+        self.label, self.container, self.port = label, container, port
+        self.log_csv = folder / f"{label}_requests_log.csv"
+        self.output = folder / f"{label}_generator.log"
+        self.cmd = [sys.executable, str(HERE / "generator.py"), "--url", url, "--until-stopped",
+                    "--pause", str(pause[0]), str(pause[1]), "--socks", socks_url(port), "--timeout", str(TIMEOUT),
+                    "--out", str(self.log_csv), "--run-id", f"{run}-{label}"]
+        self.proc = self.out = None
+        self.stop_requested = self.stopped_early = False
+
+    def start(self):
+        self.out = open(self.output, "w")
+        # start_new_session: a Ctrl+C in the terminal reaches only run_experiment.py, which then stops it properly
+        self.proc = subprocess.Popen(self.cmd, stdout=self.out, stderr=subprocess.STDOUT, start_new_session=True)
+
+    def check_running(self):
+        if self.proc.poll() is not None:
+            raise RunError(f"background client {self.label} ({self.container}) stopped right away:\n{self.output.read_text().strip()}")
+
+    def request_stop(self):
+        """SIGTERM: generator.py finishes the request in progress, logs it and exits."""
+        if self.proc is None or self.stop_requested:
+            return
+        self.stop_requested = True
+        if self.proc.poll() is None:
+            self.proc.terminate()
+        else:
+            self.stopped_early = True          # it had already exited by itself
+
+    def stop(self):
+        """Ask it to stop (if not done yet) and wait until it exits."""
+        if self.proc is None:
+            return
+        self.request_stop()
+        try:
+            self.proc.wait(timeout=STOP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+        self.out.close()
+
+    def requests(self):
+        """(requests sent, requests successful), from its log."""
+        if not self.log_csv.exists():
+            return 0, 0
+        with open(self.log_csv, newline="") as f:
+            rows = list(csv.DictReader(f))
+        return len(rows), sum(r["success"] == "True" for r in rows)
+
+
 # --- export ----------------------------------------------------------------------------------
 
 def export_packets(pcap, out_csv):
@@ -364,8 +487,10 @@ def parse_args():
     p.add_argument("--requests", type=int, default=REQUESTS, help=f"number of requests (default: {REQUESTS})")
     p.add_argument("--pause", type=float, nargs=2, default=list(PAUSE), metavar=("MIN", "MAX"),
                    help=f"random pause between requests, in seconds (default: {PAUSE[0]:g} {PAUSE[1]:g})")
-    p.add_argument("--socks", default=SOCKS, help=f"SOCKS proxy of the Tor client (default: {SOCKS})")
-    p.add_argument("--client-guard", help="container of the client's Guard (default: asked to Tor)")
+    p.add_argument("--socks", default=SOCKS, help=f"SOCKS proxy of the target client (default: {SOCKS})")
+    p.add_argument("--clients", type=int, default=CLIENTS,
+                   help=f"clients in the lab, target included; the others are background clients (default: {CLIENTS})")
+    p.add_argument("--client-guard", help="container of the target client's Guard (default: asked to Tor)")
     p.add_argument("--service-guard", help="container of the onion service's Guard (default: asked to Tor)")
     args = p.parse_args()
 
@@ -376,6 +501,8 @@ def parse_args():
         p.error("--page must be a file name like 1m.bin")
     if args.requests < 1 or not 0 <= args.pause[0] <= args.pause[1]:
         p.error("--requests must be >= 1 and --pause needs 0 <= MIN <= MAX")
+    if args.clients < 1:
+        p.error("--clients must be >= 1 (the target client)")
     return args
 
 
@@ -389,8 +516,8 @@ def main():
         raise RunError(f"{run_dir} already exists: choose another --run, or delete that folder")
     warnings = []
 
-    step("1/6 Finding the lab: containers, onion address, Guards")
-    client = the_only("client", "Tor client")
+    step("1/6 Finding the lab: clients, onion address, Guards")
+    (client, client_port), background_clients = find_clients(args.socks, args.clients)
     hs = the_only("hs", "onion service")
     onion = sh("docker", "exec", hs, "cat", "/var/lib/tor/.tor/hs/hostname")
     if not sh("docker", "exec", hs, "pgrep", "-f", "http.server", check=False):
@@ -400,16 +527,27 @@ def main():
     url = f"http://{onion}/{args.page}"
     print(f"warm-up request to {url}", flush=True)
     warm_up(url, args.socks)
+    for c, port in background_clients:
+        print(f"warm-up request through background client {c} (SOCKS port {port})", flush=True)
+        warm_up(url, socks_url(port))
     client_guard = args.client_guard or find_guard(client, REND_PURPOSE["client"])
     service_guard = args.service_guard or find_guard(hs, REND_PURPOSE["service"])
     if client_guard == service_guard:
         raise RunError(f"client and onion service use the same Guard ({client_guard}): the two observation points must differ.\n"
                        "Fix it with: ./shared-base/lab.sh separate-guards")
-    ips = {c: ip_of(c) for c in (client, hs, client_guard, service_guard)}
-    print(f"client         {client:30} {ips[client]}")
+    ips = {c: ip_of(c) for c in (client, hs, client_guard, service_guard, *(c for c, _ in background_clients))}
+    print(f"target client  {client:30} {ips[client]:15} SOCKS port {client_port}")
     print(f"onion service  {hs:30} {ips[hs]}")
     print(f"client Guard   {client_guard:30} {ips[client_guard]}")
     print(f"service Guard  {service_guard:30} {ips[service_guard]}")
+    background_info = []
+    for k, (c, port) in enumerate(background_clients, 1):
+        first = dict(first_hops(c, REND_PURPOSE["client"]))
+        shares = nickname_of(client_guard) in first
+        background_info.append({"label": f"bg{k}", "container": c, "ip": ips[c], "socks_port": port,
+                                "rendezvous_first_relays": first, "shares_target_guard": shares})
+        print(f"background {f'bg{k}':4}{c:30} {ips[c]:15} SOCKS port {port}, first relay {', '.join(first) or '?'}"
+              + ("  (same Guard as the target)" if shares else ""))
     print(f"URL            {url}")
 
     run_dir.mkdir(parents=True)
@@ -419,26 +557,39 @@ def main():
         "client": Capture(client_guard, f"/tmp/capture_{tag}_client.pcap", run_dir / "tcpdump_client_guard.log"),
         "service": Capture(service_guard, f"/tmp/capture_{tag}_service.pcap", run_dir / "tcpdump_service_guard.log"),
     }
+    backgrounds = []
+    if background_info:
+        (run_dir / "background").mkdir()
+        backgrounds = [Background(b["label"], b["container"], b["socks_port"], url, args.pause, args.run, run_dir / "background")
+                       for b in background_info]
     started = datetime.now(timezone.utc)
     finished = False
     try:
-        step("2/6 Starting tcpdump on both Guards")
+        step("2/6 Starting tcpdump on both Guards" + (f" and {len(backgrounds)} background client(s)" if backgrounds else ""))
         for c in captures.values():
             c.start()
         time.sleep(2)
         for c in captures.values():
             c.check_running()
+        for b in backgrounds:
+            b.start()
         print(f"capturing; waiting {MARGIN:.0f} s before the first request", flush=True)
         time.sleep(MARGIN)
+        for b in backgrounds:
+            b.check_running()
 
-        step(f"3/6 Sending {args.requests} requests")
-        successes = send_requests(url, args.requests, *args.pause, args.socks, TIMEOUT,
-                                  run_dir / "client_requests_log.csv", args.run)
+        step(f"3/6 Sending {args.requests} requests" + (" (the background clients are sending too)" if backgrounds else ""))
+        successes, _ = send_requests(url, args.requests, *args.pause, args.socks, TIMEOUT,
+                                     run_dir / "client_requests_log.csv", args.run)
         print(f"waiting {MARGIN:.0f} s after the last request", flush=True)
         time.sleep(MARGIN + 1)
         finished = True
     finally:
-        step("4/6 Stopping tcpdump and copying the files")
+        step("4/6 Stopping " + ("the background clients and " if backgrounds else "") + "tcpdump, copying the files")
+        for b in backgrounds:              # all of them at once: each one finishes the request in progress
+            b.request_stop()
+        for b in backgrounds:
+            b.stop()
         for c in captures.values():
             c.stop()
         if not finished:
@@ -452,6 +603,17 @@ def main():
     server_log = run_dir / "server_access.log"
     server_log.write_text(sh("docker", "exec", hs, "tail", "-n", f"+{log_lines_before + 1}", SERVER_LOG) + "\n")
     confirmed = confirmed_by_server(server_log, args.run)
+    for b, b_info in zip(backgrounds, background_info):
+        sent, ok = b.requests()
+        b_confirmed = len(confirmed_by_server(server_log, f"{args.run}-{b.label}"))
+        b_info.update({"requests_sent": sent, "requests_ok": ok, "requests_confirmed_by_server": b_confirmed,
+                       "log": str(b.log_csv.relative_to(run_dir))})
+        if b.stopped_early:
+            warnings.append(f"background client {b.label} stopped before the end of the run (see {b.output.relative_to(run_dir)})")
+        if ok < sent:
+            warnings.append(f"background client {b.label}: only {ok}/{sent} requests succeeded")
+        if b_confirmed < ok:
+            warnings.append(f"background client {b.label}: the server log confirms only {b_confirmed} of its {ok} successful requests")
     guards_after = {side: dict(first_hops(c, REND_PURPOSE[side])) for side, c in (("client", client), ("service", hs))}
     for side, guard in (("client", client_guard), ("service", service_guard)):
         if set(guards_after[side]) - {nickname_of(guard)}:
@@ -484,9 +646,11 @@ def main():
         "scenario": args.scenario, "test": args.test, "run": args.run,
         "started_utc": started.isoformat(timespec="seconds"),
         "url": url, "page": args.page or "/", "requests": args.requests, "pause_s": args.pause,
+        "clients": args.clients,
         "requests_ok": successes, "requests_confirmed_by_server": len(confirmed),
         "window": {"start": t_start, "end": t_end, "margin_s": MARGIN},
-        "client": {"container": client, "ip": ips[client]},
+        "client": {"container": client, "ip": ips[client], "socks_port": client_port},
+        "background_clients": background_info,
         "onion_service": {"container": hs, "ip": ips[hs], "onion_address": onion},
         "client_guard": {"container": client_guard, "nickname": nickname_of(client_guard), "ip": ips[client_guard]},
         "service_guard": {"container": service_guard, "nickname": nickname_of(service_guard), "ip": ips[service_guard]},
@@ -503,6 +667,9 @@ def main():
     print(f"requests OK            {successes}/{args.requests}")
     print(f"confirmed by server    {len(confirmed)}/{args.requests}")
     print(f"packets in window      client Guard {in_window['client']} | service Guard {in_window['service']}")
+    for b in background_info:
+        print(f"background {b['label']:4}        {b['requests_ok']}/{b['requests_sent']} OK, "
+              f"{b['requests_confirmed_by_server']} confirmed by server")
     for w in warnings:
         print(f"WARNING: {w}")
 

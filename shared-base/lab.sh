@@ -2,11 +2,13 @@
 # Build the whole private Tor lab in one go (same steps as docs/GETTING_STARTED.md).
 #
 # Usage (from anywhere, with the project venv created in .venv/):
-#   ./shared-base/lab.sh up         create DAs, relays, exits, onion service, client, clearnet target, and test both scenarios
-#   ./shared-base/lab.sh status     show containers, IPs, consensus, onion address
-#   ./shared-base/lab.sh onion-web  create the test files and (re)start the web server inside the onion service
-#   ./shared-base/lab.sh separate-guards  make sure client and onion service use different Guards (fixes it if not)
-#   ./shared-base/lab.sh down       delete every lab container, the lab networks and the volume (keeps the Docker image)
+#   ./shared-base/lab.sh up               create DAs, relays, exits, onion service, client, clearnet target, and test both scenarios
+#   ./shared-base/lab.sh status           show containers, IPs, consensus, onion address
+#   ./shared-base/lab.sh onion-web        create the test files and (re)start the web server inside the onion service
+#   ./shared-base/lab.sh separate-guards  make sure the target client and onion service use different Guards (fixes it if not)
+#   ./shared-base/lab.sh add-clients N    add N background clients (SOCKS ports 9061, 9062, ...) for the multi-client tests
+#   ./shared-base/lab.sh remove-clients   delete the background clients (the target client, SOCKS port 9050, stays)
+#   ./shared-base/lab.sh down             delete every lab container, the lab networks and the volume (keeps the Docker image)
 #
 # Topology is configurable with environment variables, e.g.:
 #   RELAY_COUNT=8 EXIT_COUNT=2 ./shared-base/lab.sh up
@@ -15,7 +17,10 @@ set -euo pipefail
 DA_COUNT="${DA_COUNT:-3}"
 RELAY_COUNT="${RELAY_COUNT:-5}"
 EXIT_COUNT="${EXIT_COUNT:-3}"
+# The client created by 'up' is the TARGET client (the one the experiments watch); its SOCKS port is published
+# on the host on SOCKS_PORT. Background clients (add-clients) get the free ports from BACKGROUND_PORT upwards.
 SOCKS_PORT="${SOCKS_PORT:-9050}"
+BACKGROUND_PORT="${BACKGROUND_PORT:-9061}"
 TOR_SUBNET="${TOR_SUBNET:-10.5.0.0/16}"
 ONION_PAGE='<h1>Hello from my private Tor network</h1>'
 # Extra files served by the onion service for the response-size experiments, as name:bytes.
@@ -114,8 +119,36 @@ with Controller.from_port(port=9051) as tor:
 "
 }
 
+# Page of onion address $1 received through the client whose SOCKS port is on host port $2 (default: the target)
 onion_reachable() {
-    curl -s -m 30 --socks5-hostname "127.0.0.1:$SOCKS_PORT" "http://$1/" | contains 'Hello from my private Tor network'
+    curl -s -m 30 --socks5-hostname "127.0.0.1:${2:-$SOCKS_PORT}" "http://$1/" | contains 'Hello from my private Tor network'
+}
+
+# Host port on which the SOCKS port (9050 inside the container) of client container $1 is published (empty if none).
+# Read from the container's configuration, so it works for stopped containers too.
+socks_port_of() {
+    docker inspect -f '{{range $b := index .HostConfig.PortBindings "9050/tcp"}}{{$b.HostPort}} {{end}}' "$1" 2>/dev/null | awk '{print $1}'
+}
+
+# The target client: the running client whose SOCKS port is published on SOCKS_PORT (fails if there is none)
+target_client() {
+    local c
+    for c in $(names client); do
+        if [ "$(socks_port_of "$c")" = "$SOCKS_PORT" ]; then
+            echo "$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Host port $1 is free: no listening socket on this machine and no client container (also stopped ones) reserving it
+port_free() {
+    local c
+    [ -z "$(ss -ltnH "sport = :$1")" ] || return 1
+    for c in $(docker ps -a --filter name=testing-tor-client- --format '{{.Names}}'); do
+        [ "$(socks_port_of "$c")" != "$1" ] || return 1
+    done
 }
 
 clearnet_reachable() {
@@ -228,11 +261,14 @@ cmd_onion_web() {
 # The experiments watch the client's Guard and the onion service's Guard, so they must be two different relays.
 # With few relays in the lab they are often the same one. In that case the client is told to avoid that relay
 # (ExcludeNodes in its torrc, kept across restarts) and restarted, so Tor picks another Guard.
+#
+# Only the target client is changed: background clients may use any Guard (the analysis filters the client
+# side by the target's IP).
 cmd_separate_guards() {
     local client hs onion cg sg since
-    client=$(names client | head -1)
+    client=$(target_client) || die "no running client publishes its SOCKS port on $SOCKS_PORT (the target client)"
     hs=$(names hs | head -1)
-    [ -n "$client" ] && [ -n "$hs" ] || die "the client or the onion service container is not running"
+    [ -n "$hs" ] || die "the onion service container is not running"
     onion=$(docker exec "$hs" cat /var/lib/tor/.tor/hs/hostname)
 
     # A request builds the rendezvous circuits, whose first relays are the two Guards
@@ -259,20 +295,76 @@ cmd_separate_guards() {
     log "Client torrc now has: $(docker exec "$client" grep '^ExcludeNodes ' /etc/tor/torrc)"
 }
 
+# Multi-client tests: background clients send the same kind of requests as the target client, at the same time,
+# so the observed relays also carry other people's traffic. Each one is a separate client container (its own Tor,
+# Guard and circuits) with its own SOCKS port on the host: several programs on the same SOCKS port would share
+# one Tor and even one circuit, i.e. they would be one client.
+cmd_add_clients() {
+    local n=${1:-} hs onion port before new i
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] || die "usage: ./shared-base/lab.sh add-clients <number of background clients to add>"
+    find_python
+    target_client >/dev/null || die "no running client publishes its SOCKS port on $SOCKS_PORT (the target client): is the lab up?"
+    hs=$(names hs | head -1)
+    [ -n "$hs" ] || die "the onion service container is not running"
+    onion=$(docker exec "$hs" cat /var/lib/tor/.tor/hs/hostname)
+
+    local -a added=() ports=()
+    port=$BACKGROUND_PORT
+    for i in $(seq 1 "$n"); do
+        until port_free "$port"; do port=$((port + 1)); done
+        before=$(names client | sort)
+        cli container add-client --port "$port" >/dev/null
+        new=$(comm -13 <(echo "$before") <(names client | sort))
+        [ -n "$new" ] || die "the new client container did not start"
+        log "Added background client $i/$n: $new (SOCKS 127.0.0.1:$port)"
+        added+=("$new")
+        ports+=("$port")
+        port=$((port + 1))
+    done
+
+    for i in "${!added[@]}"; do
+        wait_for "bootstrap of ${added[$i]}" 300 bootstrapped "${added[$i]}"
+        wait_for "onion page through ${added[$i]}" 300 onion_reachable "$onion" "${ports[$i]}"
+    done
+    log "Done: the lab now has $(names client | wc -l) clients (target included). Use --clients $(names client | wc -l) in run_experiment.py."
+}
+
+cmd_remove_clients() {
+    local target c removed=0
+    find_python
+    target=$(target_client) || die "no running client publishes its SOCKS port on $SOCKS_PORT (the target client): nothing removed"
+    for c in $(docker ps -a --filter name=testing-tor-client- --format '{{.Names}}'); do
+        [ "$c" != "$target" ] || continue
+        # Through the CLI so that cli/status.json stays in sync; plain docker rm if the CLI does not know it
+        cli container delete "$c" >/dev/null 2>&1 || docker rm -f "$c" >/dev/null
+        log "Removed background client $c"
+        removed=$((removed + 1))
+    done
+    log "Removed $removed background client(s); the target client $target is kept."
+}
+
 cmd_status() {
-    local c role ip hs client cons flags
+    local c role ip hs client cons flags port
     if [ -z "$(docker ps -a --filter name=testing-tor- -q)" ]; then
         echo "No lab containers found. Start the lab with: ./shared-base/lab.sh up"
         return
     fi
     cons=$(consensus 2>/dev/null || true)
 
-    printf '\n%-7s %-28s %-15s %-8s %s\n' ROLE CONTAINER IP STATE 'CONSENSUS (flags)'
+    printf '\n%-7s %-28s %-15s %-8s %s\n' ROLE CONTAINER IP STATE 'CONSENSUS (flags) / SOCKS port of clients'
     for c in $(docker ps -a --filter name=testing-tor- --format '{{.Names}}' | sort); do
         role=$(cut -d- -f3 <<<"$c")
         ip=$(docker inspect -f '{{with index .NetworkSettings.Networks "testing-tor"}}{{.IPAddress}}{{end}}' "$c")
         case "$role" in
-        hs | client) flags='-' ;; # not relays
+        hs) flags='-' ;; # not a relay
+        client)
+            port=$(socks_port_of "$c")
+            if [ "$port" = "$SOCKS_PORT" ]; then
+                flags="SOCKS 127.0.0.1:$port (target)"
+            else
+                flags="SOCKS 127.0.0.1:${port:-none} (background)"
+            fi
+            ;;
         *)
             if [ -z "$cons" ]; then
                 flags='? (no consensus available)'
@@ -296,10 +388,15 @@ cmd_status() {
     fi
 
     hs=$(names hs | head -1)
-    client=$(names client | head -1)
+    client=$(target_client || true)
     echo
     if [ -n "$client" ]; then
-        printf 'SOCKS proxy:    socks5h://%s\n' "$(docker port "$client" 9050/tcp 2>/dev/null | head -1)"
+        printf 'SOCKS proxy:    socks5h://127.0.0.1:%s (target client %s)\n' "$SOCKS_PORT" "$client"
+    else
+        printf 'SOCKS proxy:    no running client publishes its SOCKS port on %s\n' "$SOCKS_PORT"
+    fi
+    if [ "$(names client | wc -l)" -gt 1 ]; then
+        printf 'Clients:        %s running (target included): use --clients %s, or remove-clients\n' "$(names client | wc -l)" "$(names client | wc -l)"
     fi
     if [ -n "$hs" ]; then
         printf 'Onion address:  http://%s/\n' "$(docker exec "$hs" cat /var/lib/tor/.tor/hs/hostname 2>/dev/null)"
@@ -321,8 +418,10 @@ down) cmd_down ;;
 status) cmd_status ;;
 onion-web) cmd_onion_web ;;
 separate-guards) cmd_separate_guards ;;
+add-clients) cmd_add_clients "${2:-}" ;;
+remove-clients) cmd_remove_clients ;;
 *)
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

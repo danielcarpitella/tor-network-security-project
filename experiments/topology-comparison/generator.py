@@ -7,6 +7,10 @@ The attacker never sees it; analyze.py uses it only to check the results.
 The CSV has the same columns as experiments/onion-correlation/traffic_generator.py,
 so the notebooks in that folder can read these logs too.
 
+Background clients (multi-client tests): run_experiment.py starts one generator per background client with
+--until-stopped, and stops it with SIGTERM at the end of the run. On SIGTERM the generator finishes the request
+in progress, logs it and exits, so the log covers all the traffic the client sent.
+
 Example, a short test with 5 requests:
     python experiments/topology-comparison/generator.py \\
         --url http://<onion-address>/ --requests 5 --out /tmp/test_log.csv
@@ -16,6 +20,7 @@ import argparse
 import csv
 import random
 import re
+import signal
 import sys
 import time
 from pathlib import Path
@@ -33,22 +38,39 @@ COLUMNS = ["request_id", "timestamp_start", "timestamp_end", "latency_sec",
            "response_size_bytes", "status_code", "success", "error_message"]
 
 
-def send_requests(url, count, pause_min, pause_max, socks, timeout, out_path, run_id=None):
-    """Send `count` GET requests to `url`, one after another, and log each one to `out_path`.
+def pause(seconds, should_stop):
+    """Sleep for `seconds`, but return early as soon as should_stop() is True."""
+    deadline = time.monotonic() + seconds
+    while not should_stop():
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(left, 0.1))
 
-    Returns the number of successful requests.
+
+def send_requests(url, count, pause_min, pause_max, socks, timeout, out_path, run_id=None, should_stop=None):
+    """Send GET requests to `url`, one after another, and log each one to `out_path`.
+
+    count: number of requests, or None to keep going until should_stop() is True.
+    should_stop: optional function, checked before each request and during the pauses. A request already
+    in progress is always completed and logged.
+    Returns (successful requests, requests sent).
     """
+    if count is None and should_stop is None:
+        raise ValueError("count=None needs should_stop, otherwise the requests never end")
+    should_stop = should_stop or (lambda: False)
     # socks5h (with the "h"): the Tor client resolves the hostname, which is required for .onion addresses
     proxies = {"http": socks, "https": socks}
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    successes = 0
+    successes = sent = 0
 
     # Mode "x" creates the file and fails if it already exists, so an old log is never overwritten
     with open(out_path, "x", newline="") as f:
         log = csv.DictWriter(f, fieldnames=COLUMNS)
         log.writeheader()
 
-        for i in range(1, count + 1):
+        while (count is None or sent < count) and not should_stop():
+            i = sent + 1
             # The id in the query string shows up in the web server's access log, so every request
             # can be matched with what the server received. The server ignores it when serving the file.
             tag = f"{run_id}-{i}" if run_id else str(i)
@@ -71,23 +93,27 @@ def send_requests(url, count, pause_min, pause_max, socks, timeout, out_path, ru
             log.writerow({"request_id": i, "timestamp_start": start, "timestamp_end": end,
                           "latency_sec": latency, **result})
             f.flush()                      # write each row immediately: if the run is stopped, the log is still usable
+            sent = i
 
+            progress = f"{i:>3}/{count}" if count else f"{i:>3}"
             if result["success"]:
                 successes += 1
-                print(f"[{i:>3}/{count}] OK    {result['response_size_bytes']:>8} B  {latency:6.2f} s", flush=True)
+                print(f"[{progress}] OK    {result['response_size_bytes']:>8} B  {latency:6.2f} s", flush=True)
             else:
-                print(f"[{i:>3}/{count}] FAIL  {result['error_message']}", flush=True)
+                print(f"[{progress}] FAIL  {result['error_message']}", flush=True)
 
-            if i < count:
-                time.sleep(random.uniform(pause_min, pause_max))
+            if count is None or i < count:
+                pause(random.uniform(pause_min, pause_max), should_stop)
 
-    return successes
+    return successes, sent
 
 
 def main():
     parser = argparse.ArgumentParser(description="Send HTTP requests through Tor and log their timing.")
     parser.add_argument("--url", required=True, help="page to request, e.g. http://<onion-address>/1m.bin")
     parser.add_argument("--requests", type=int, default=REQUESTS, help=f"number of requests (default: {REQUESTS})")
+    parser.add_argument("--until-stopped", action="store_true",
+                        help="ignore --requests and keep going until SIGTERM (used for the background clients)")
     parser.add_argument("--pause", type=float, nargs=2, default=list(PAUSE), metavar=("MIN", "MAX"),
                         help=f"random pause between requests, in seconds (default: {PAUSE[0]:g} {PAUSE[1]:g})")
     parser.add_argument("--socks", default=SOCKS, help=f"SOCKS proxy of the Tor client (default: {SOCKS})")
@@ -106,16 +132,23 @@ def main():
     if args.run_id and not re.fullmatch(r"[A-Za-z0-9_-]+", args.run_id):
         parser.error("--run-id may contain only letters, numbers, '_' and '-'")
 
-    print(f"Sending {args.requests} requests to {args.url} via {args.socks}", flush=True)
+    # SIGTERM = "stop after the request in progress" (a plain flag: the handler must not take locks)
+    stop_requested = []
+    signal.signal(signal.SIGTERM, lambda *_: stop_requested.append(True))
+    count = None if args.until_stopped else args.requests
+
+    print(f"Sending {'requests until stopped' if count is None else f'{count} requests'} to {args.url} via {args.socks}", flush=True)
     try:
-        successes = send_requests(args.url, args.requests, *args.pause, args.socks, args.timeout, args.out, args.run_id)
+        successes, sent = send_requests(args.url, count, *args.pause, args.socks, args.timeout, args.out, args.run_id,
+                                        should_stop=lambda: bool(stop_requested))
     except FileExistsError:
         sys.exit(f"ERROR: {args.out} already exists. Choose another --out so an old log is not overwritten.")
     except KeyboardInterrupt:
         sys.exit(f"\nStopped by the user. The requests sent so far are logged in {args.out}")
 
-    print(f"Done: {successes}/{args.requests} successful. Log: {args.out}")
-    sys.exit(0 if successes == args.requests else 1)   # exit code 1 tells run_experiment.py that something failed
+    print(f"Done: {successes}/{sent} successful. Log: {args.out}")
+    all_done = successes == sent and (count is None or sent == count)
+    sys.exit(0 if all_done else 1)   # exit code 1 = some request failed, or stopped before --requests
 
 
 if __name__ == "__main__":
