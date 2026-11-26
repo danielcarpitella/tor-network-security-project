@@ -45,8 +45,11 @@ HOW IT WORKS, STEP BY STEP
 
     Step 4 - Control (what luck alone gives)
       The same pairing, but the client bursts of run i against the service bursts of each other run j,
-      shifted so that the first requests of the two runs line up. Run j happened at another time, so no
-      pair can be real. The control of run i is the mean over all the other runs.
+      placed at a random moment: the first requests of the two runs are lined up, then run j is moved by a
+      random amount between 0 and the average time between two requests of run i, so that the two request
+      rhythms meet at a random point. This is done CONTROL_DRAWS (10) times for each other run, with a fixed
+      random seed (the same data always gives the same control). Run j happened at another time, so no pair
+      can be real. The control of run i is the mean over all the other runs and all the draws.
 
     Step 5 - Check the pairs against the ground truth (client_requests_log.csv, only successful requests)
       A request's interval is [timestamp_start - LAG, timestamp_end + LAG].
@@ -81,8 +84,9 @@ HOW IT WORKS, STEP BY STEP
 DESIGN CHOICES (and why)
     * Same method and the same settings as the minimal analysis in experiments/onion-correlation/
       (onion_analysis_minimal.ipynb), so results are comparable with it; there, running this script on those
-      runs gives the same numbers. Settings can be changed with --gap, --min-bytes and --lag for sensitivity checks;
-      the output file name contains them, so different settings never overwrite each other.
+      runs gives the same real numbers. The control is a little lower than the notebook's, because of the
+      random placement described below. Settings can be changed with --gap, --min-bytes and --lag for
+      sensitivity checks; the output file name contains them, so different settings never overwrite each other.
     * Three percentages, each with its own denominator:
         - out of the client bursts: how many find a partner (how clean the signal is; extra traffic on a Guard
           adds bursts with no partner);
@@ -108,8 +112,19 @@ DESIGN CHOICES (and why)
     * Every result comes with its control: a percentage alone says nothing, the gap between real and control does.
     * Percentages are timing statistics, not precision/recall: a burst has no independent label saying which
       request caused it; the request log is only used to count covered requests.
-    * The control aligns runs on their first request (not on capture start), so both sides have a
-      realistic request rhythm and only the true timing link is missing.
+    * The control places the other run by its requests (not by capture start), so both sides have a
+      realistic request rhythm and only the true timing link is missing. The placement is random: lining up
+      the first requests exactly (as the notebook in onion-correlation does) made those two requests pair by
+      construction, so every run got one request "covered" by the control for free (about +1 point on
+      covered_control_% with 100 requests, +20 points with 5; with 1m.bin even control_% got +20 points,
+      because one request has ~190 bursts). With a random placement, requests line up only as often as luck
+      makes them. One placement per other run would already be a valid control; 10 make it steadier (the
+      noise of an average shrinks with the square root of the number of placements), at almost no cost.
+    * paired_% and control_% count bursts, covered_% counts requests. In the lab every request, even 1m.bin,
+      passes the Guards in less than 0.1 s, so a request is one moment of activity whatever its size: 1 burst
+      for the small page, ~190 for 1m.bin. Burst percentages therefore grow with the page size without the
+      attacker doing any better. The main result is covered_% against its control; compare tests with
+      different pages only on those.
 
 OUTPUT
     The table on screen and summary_gap<gap>_min<bytes>_lag<lag>[_target].csv (by default in the test folder;
@@ -126,6 +141,7 @@ EXAMPLES
 import argparse
 import json
 import sys
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -134,6 +150,8 @@ import pandas as pd
 BURST_GAP = 0.1      # seconds: a bigger gap between packets starts a new burst
 MIN_BYTES = 1000     # bytes: smaller bursts are discarded
 LAG = 0.05           # seconds: max distance between the starts of two paired bursts
+CONTROL_DRAWS = 10   # random placements of each other run in the control (their results are averaged)
+CONTROL_SEED = 1     # fixed seed: the same data always gives the same control
 
 SETTINGS_TO_MATCH = ("scenario", "page", "requests", "pause_s", "clients")   # must be equal across the runs of a test
 SETTING_DEFAULTS = {"clients": 1}     # for runs recorded before the setting existed
@@ -246,6 +264,16 @@ def pair(client_starts, service_starts, lag, shift=0.0):
     return np.array(paired)
 
 
+def control_shifts(run, req, other, other_req):
+    """CONTROL_DRAWS random shifts for the service bursts of run `other` in the control of run `run` (see step 4):
+    first requests lined up, plus a random amount between 0 and the average time between two requests of `run`.
+    The seed depends only on the two run names, so a pair of runs gets the same shifts whatever else is analysed."""
+    starts = np.sort(req["timestamp_start"].to_numpy())
+    spacing = (starts[-1] - starts[0]) / (len(starts) - 1) if len(starts) > 1 else 1.0
+    rng = np.random.default_rng([CONTROL_SEED, zlib.crc32(f"{run.name}|{other.name}".encode())])
+    return starts[0] - other_req["timestamp_start"].min() + rng.uniform(0, spacing, CONTROL_DRAWS)
+
+
 def covered(paired_starts, req, lag):
     """Number of requests with at least one paired client burst starting in [start - lag, end + lag]."""
     starts = np.sort(paired_starts)
@@ -302,7 +330,7 @@ def main():
     warnings = []
 
     # Step 1-2: load every run and compute the bursts of both Guards
-    client, service, requests, background, t0 = {}, {}, {}, {}, {}
+    client, service, requests, background = {}, {}, {}, {}
     infos = {}
     for run in runs:
         infos[run] = run_info(run)
@@ -313,7 +341,6 @@ def main():
         service[run] = burst_starts(window / "service_metadata.csv", service_ip, client_ip, args.gap, args.min_bytes)
         requests[run] = load_requests(run)
         background[run] = load_background(run, infos[run])
-        t0[run] = requests[run]["timestamp_start"].min()     # first request: used to align runs in the control
     has_background = any(b is not None for b in background.values())
 
     for key in SETTINGS_TO_MATCH:
@@ -331,7 +358,9 @@ def main():
     for run, name in zip(runs, names):
         req, bg = requests[run], background[run]
         real = pair(client[run], service[run], args.lag)
-        controls = [pair(client[run], service[other], args.lag, shift=t0[run] - t0[other]) for other in runs if other != run]
+        controls = [pair(client[run], service[other], args.lag, shift=s)
+                    for other in runs if other != run
+                    for s in control_shifts(run, req, other, requests[other])]
         rows.append({
             "run": name, "clients": infos[run].get("clients", 1), "requests": len(req),
             "client_bursts": len(client[run]), "service_bursts": len(service[run]),
@@ -374,9 +403,10 @@ def main():
           f"{'target client only' if args.target_only else 'all packets of the Guard'}\n")
     print(table.to_string(index=False))
     all_row = table.iloc[-1]
-    print(f"\nPaired client bursts:  {all_row['paired_%']}%   (control {all_row['control_%']}%)")
+    print(f"\nCovered requests:      {all_row['covered_%']}%   (control {all_row['covered_control_%']}%)   <- main result")
+    print(f"Paired client bursts:  {all_row['paired_%']}%   (control {all_row['control_%']}%)   "
+          "(counts bursts: not comparable across page sizes)")
     print(f"Pairs inside requests: {all_row['pairs_in_req_%']}%   (control {all_row['control_pairs_in_req_%']}%)")
-    print(f"Covered requests:      {all_row['covered_%']}%   (control {all_row['covered_control_%']}%)")
     if has_background:
         print(f"Target requests overlapping a background request: {all_row['req_overlap_%']}%")
         print(f"Pairs made while a background client was active:  {all_row['pairs_overlap_%']}%   (upper bound on wrong pairs)")

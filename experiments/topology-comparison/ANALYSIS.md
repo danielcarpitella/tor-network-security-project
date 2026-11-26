@@ -19,8 +19,10 @@ at the two points be linked by timing alone, clearly more often than by luck?
 3. **Request interval**: from the target's own log, the time from the start of a request to its end, plus 50 ms on
    each side. The attacker never sees this log: it is used only to check the attacker's guesses.
 4. **Control**: the same pairing, but the client bursts of this run against the service bursts of a *different*
-   run, aligned on the first request. No real link exists there, so every pair is pure luck. Averaged over all the
-   other runs of the test.
+   run, placed at a random moment (the first requests lined up, then the other run moved by a random amount up to
+   the average time between two requests). No real link exists there, so every pair is pure luck. Each other run
+   is placed 10 times at random and everything is averaged, which makes the control steadier; the random seed is
+   fixed, so the same data always gives the same control.
 
 ## The table, column by column
 
@@ -82,9 +84,9 @@ Smoke test `smoke_clients`, run_01, `--target-only` (5 requests only: it checks 
 | client_bursts | 5 | one burst per request on the target's link |
 | service_bursts | 128 | the service's Guard is busy with all 5 clients |
 | pairs / paired_% | 5 / 100% | every target burst found a partner |
-| control_% | 40% | 2 of 5 also found one in another run, by luck |
+| control_% | 28% | placed against other runs, 28% of them also found one, by luck (1.4 of 5 on average) |
 | covered | 5/5 | all 5 requests noticed |
-| covered_control_% | 40% | luck alone "notices" 2 of 5 |
+| covered_control_% | 28% | luck alone "notices" 1.4 of 5 on average |
 | req_overlap_% | 80% | 4 of the 5 requests happened while another client was active |
 | pairs_overlap_% | 60% | 3 of the 5 pairs could have matched another client's traffic |
 
@@ -92,6 +94,10 @@ Smoke test `smoke_clients`, run_01, `--target-only` (5 requests only: it checks 
 
 - The result is always the **gap between real and control**, never a percentage alone.
 - The main number is `covered_%` against `covered_control_%` (Elena's onion result: 85.8% against 3.1%).
+- **Count requests, not bursts.** `paired_%` and `control_%` count bursts, `covered_%` counts requests. In the lab
+  a request is one short moment at both Guards whatever its size (see the 1 MB findings below): 1 burst for the
+  small page, ~190 for `1m.bin`. Burst percentages grow with the page size without the attacker doing any better,
+  so tests with different pages are compared only on `covered_%` and its control.
 - Tests with different numbers of clients are compared only when all of them, the baseline included, are analysed
   with `--target-only`. Without the option the results are comparable with `experiments/onion-correlation/`.
   `run_test.sh` produces both tables.
@@ -101,37 +107,77 @@ Smoke test `smoke_clients`, run_01, `--target-only` (5 requests only: it checks 
 1. **Timing, not content.** The attacker can link (who talks to whom, and when), not read what is transported.
    Linking is the goal of the attack (de-anonymisation = connecting a user to a service), so this is not a gap of
    the method. Sizes can hint at *which* page was fetched (website fingerprinting), a different attack, not done here.
-2. **`covered` is generous.** One pair is enough, whatever the length of the request. With the small page this is
-   right: each request leaves one burst on the target's link, so one pair is all the evidence there can be. With
-   long requests (e.g. `1m.bin`) it is too generous: a request with many bursts and a single pair counts like one
-   where every burst pairs, and a long request has more chances of a lucky pair. The control has the same
-   advantage, so the real-vs-control gap stays fair on average, but a single covered request does not mean the
-   attacker would really have recognised it.
+2. **`covered` needs one pair per request.** In the lab this is the right unit: every request, even `1m.bin`, is one
+   moment of less than 0.1 s at both Guards, so one pair means "the two moments line up". Bigger requests are
+   easier to hit by luck (more bursts in the moment), and the control measures that: in `smoke_1m` (requests 1-2 s
+   apart) luck covered 24% of the requests, against 1% with the small page. On real Tor, with real network delays,
+   a 1 MB download lasts seconds; there one pair per request would be too generous, and the share of a request's
+   bursts that pair would be the better measure.
 3. **`pairs_in_req_%` is ~100% by construction with `--target-only`** (see above).
 4. **`pairs_overlap_%` is an upper bound**, not a count of wrong pairs.
 5. **Timing statistics, not precision/recall**: a burst has no label saying which request or client it belongs to.
 6. **Small lab**: one machine and one clock (no network delay), few clients (2-5 against thousands of users on a
    real relay), thresholds (0.1 s, 1000 B, 50 ms) chosen by hand.
 
-## Known issues (found in the smoke tests of 2026-11-23, not fixed yet)
+## Known issues (found in the smoke tests of 2026-11-23)
 
-- **A. The control always matches the first request.** The control aligns two runs on their first request, so
-  those two requests coincide by construction and always pair. In `smoke2` the control covered exactly request 1 of
-  each run (20% = 1 of 5). With 100 requests it adds about 1 point to `covered_control_%`. Elena's notebook aligns
-  runs the same way. Possible fixes: leave the first request out of the control's coverage, or align the runs with
-  an offset so that the first requests do not coincide.
-- **B. With the small page a request depends on one packet.** On the target's link the request cells never reach
-  1000 B in one direction; the burst that survives is the response, and only when two cells travel together in one
-  1122-byte packet. In `smoke2` run_02 two fast requests (0.010 s instead of 0.053 s) had the cells travelling
-  separately, left no burst, and were not covered (3/5). Not a bug, but a limit: with the small page, detection
-  depends on how TCP packs the cells. Options: a sensitivity check with `--min-bytes 500`, or tests with
-  `--page 10k.bin`.
+- **A. The control always matched the first request (fixed on 2026-11-26).** The control used to line up two runs
+  exactly on their first request, so those two requests coincided by construction and always paired. In `smoke2`
+  the control covered exactly request 1 of each run (20% = 1 of 5); in `smoke_1m` all ~190 bursts of request 1
+  paired, which alone made `control_%` 20%. With 100 requests it added about 1 point to `covered_control_%`.
+  Elena's notebook aligns runs the same way, so her control (3.1%) probably includes about 1 point of it.
+  Fix: the other run is placed at a random moment (idea 4 above). `smoke2`'s control went from 20% to 1%, and in
+  `smoke_1m` the lucky hits are now spread over all the requests instead of always falling on request 1.
+- **B. With the small page a third of the requests leave no burst (decided on 2026-11-26: the real tests use
+  `--page 10k.bin`).** On the target's link the small page's request cells never reach 1000 B in one direction
+  (the two directions keep taking turns); the burst that survives is the response, and only when two cells travel
+  together in one 1122-byte packet. That happens when TCP waits ~40 ms before sending ("slow" requests, ~0.054 s).
+  When it does not wait ("fast" requests, ~0.014 s) the cells travel separately, nothing reaches 1000 B, and the
+  request is invisible to the method, for a reason that has nothing to do with the attack.
+  Measured in `check_small` (3 runs x 20 requests): 22 of 60 requests were not covered; all 22 left no burst at all
+  and all 22 were fast; no slow request was missed. The three options, measured on the same kind of runs:
+
+  | Setup | covered | control | gap |
+  |---|---|---|---|
+  | small page, 1000 B (default) | 63.3% | 1.8% | 61.5 |
+  | small page, `--min-bytes 500` | 100% | 9.8% | 90.2 |
+  | **`10k.bin`, 1000 B** | **100%** | **3.1%** | **96.9** |
+  | `10k.bin`, `--min-bytes 500` | 100% | 7.4% | 92.6 |
+
+  A lower threshold recovers every request but makes the control ~5 times higher (many small unrelated bursts
+  start counting). `10k.bin` (about 20 cells per response) makes real bursts whatever TCP does, and keeps the
+  control low: it is the page of the real tests. For the report: Elena's tests used the small page, so part of her
+  uncovered requests (14%) may be this effect (not checked on her data).
+
+Also seen in `check_small`, not an issue: the first 2-3 requests of a run get slightly more lucky hits in the
+control. In the 5 s before each run's first request the service's Guard carries about 4 times more unrelated
+traffic than during the run (probably Tor activity left after the warm-up request, not confirmed), and the random
+placement puts the end of that period near the other run's first requests. It is real unrelated traffic, so
+genuine luck, and its weight shrinks with 100 requests per run.
+
+## Findings from the 1 MB smoke test (`smoke_1m`, 2026-11-26)
+
+- **A 1 MB request lasts 0.06-0.12 s** in the lab (no network delay, no bandwidth limit), about as short as the
+  small page. So in the lab a request is always one short moment at both Guards, whatever its size.
+- **It makes ~410 bursts, ~190 of them kept (at least 1000 B)**, each about 2 packets / 4.2 KB. The download
+  flows in one direction, but the client keeps sending small TCP ACKs back (72 B, ~80% of its packets): each one is
+  a change of direction, so it ends a burst.
+- **Packets in the captures are not the packets on the wire**: 45% of the captured frames are bigger than the
+  network's 1514 B maximum (up to 19 KB), because Linux glues packets together on Docker's virtual network cards
+  before tcpdump sees them. Timing is not affected; sizes should not be read as real packet sizes.
+- Consequence: in the lab, the page size changes how many bursts a request has, not how many moments the attacker
+  can match. A page-size test is expected to change `covered_%` little; the report should say why (no network
+  delay in the lab), and that on real Tor a big download is spread over seconds. Adding artificial delay or
+  bandwidth limits (Linux `tc netem`) would make the size test meaningful; not done, and the containers would have
+  to allow it.
 
 ## Possible improvements (not implemented)
 
 - **Per-request share**: for each request, the share of its client bursts that are paired; a request counts as
-  recognised only above a threshold (e.g. half of its bursts). The same as `covered` for the small page, stricter
-  for long requests (limit 2).
+  recognised only above a threshold. Not useful in the lab (a request is one moment, so the share is ~100%),
+  useful only with real delays (limit 2).
+- **Decision per run**: for each run, does its real score beat the best score it gets against the other runs?
+  Gives "identified in X of N runs" and the margin between real and best fake. Cheap to add to `analyze.py`.
 - **A decision per time window**, the closest to a real attacker. Split each run into windows (e.g. 30 s); the
   score of a window is the share of client bursts paired in it. Windows paired with the same run are real links,
   windows paired with another run (as in the control) are not: at this level the labels exist. Choosing a threshold

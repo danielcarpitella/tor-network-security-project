@@ -4,7 +4,7 @@ Working notes for the third contribution: where the work stands, observations wo
 report, and the plan for the clearnet scenario. How the scripts work is described at the top of each script;
 what the analysis computes and how to read its table is in [ANALYSIS.md](ANALYSIS.md).
 
-## Status (2026-11-23)
+## Status (2026-11-26)
 
 Done:
 
@@ -17,20 +17,29 @@ Done:
 - `shared-base/lab.sh`: `onion-web` serves `/10k.bin`, `/100k.bin`, `/1m.bin`; new command `separate-guards`.
 - Smoke tests on the real lab passed (5 requests: 5/5 OK, 5/5 confirmed by the server).
 - Multi-client support (section below): `lab.sh add-clients` / `remove-clients`, `run_experiment.py --clients`,
-  `analyze.py --target-only` and the two overlap columns; `run_test.sh` runs both analyses.
-  Tested offline only (synthetic runs, background generator start/stop), **not yet on the lab**.
+  `analyze.py --target-only` and the two overlap columns; `run_test.sh` runs both analyses. Smoke-tested on the lab.
+- Smoke tests on the lab, all described in [ANALYSIS.md](ANALYSIS.md):
+  - 2026-11-23, `smoke_clients` (5 clients) and `smoke2` (1 client): the multi-client pipeline works; they showed
+    known issues A and B.
+  - 2026-11-26, `smoke_1m`: in the lab even a 1 MB request lasts < 0.1 s, so a request is one moment whatever its
+    size. Main result = `covered_%` vs its control; `paired_%` is not comparable across page sizes.
+  - 2026-11-26, `check_small` and `check_10k` (3 runs x 20 requests each, normal pauses): the fixed control works
+    (low, reproducible, no free request). With the small page 22 of 60 requests left no burst at all (issue B);
+    with `10k.bin` every request is visible and the control stays low.
+- Known issue A (the control always matched the first request): **fixed** on 2026-11-26 (random placement, 10 per run).
+- Known issue B (with the small page a third of the requests leave no burst): **decided** on 2026-11-26, the real
+  tests use `--page 10k.bin`.
 
-Next:
+Next (all with `--page 10k.bin`, so that the tests are comparable with each other):
 
-- Onion baseline: `./experiments/topology-comparison/run_test.sh baseline 5` (5 runs x 100 requests, ~35 min).
-  Expected roughly like the onion-correlation result (~85% of requests covered vs a few % in the control).
-- Multi-client smoke tests done on 2026-11-23 (`smoke_clients` with 5 clients, `smoke2` with 1): the pipeline works.
-  They showed two known issues of the analysis (A: the control always matches the first request; B: with the
-  small page a request depends on one packet), described in [ANALYSIS.md](ANALYSIS.md): decide on them before the
-  real runs.
+- Onion baseline: `./experiments/topology-comparison/run_test.sh baseline_10k 5 --page 10k.bin`
+  (5 runs x 100 requests, ~35 min). Expected from `check_10k`: every request covered, control a few %.
+- Optional: a small-page baseline, `./experiments/topology-comparison/run_test.sh baseline_small 5`, to compare
+  with Elena's setup and to show issue B in the report.
 - Multi-client tests: N = 2 and N = 4 (commands in the section below).
 - Clearnet support (plan below).
-- Optional check: run `analyze.py` on Elena's runs (command in its EXAMPLES); it should give her numbers.
+- Optional check: run `analyze.py` on Elena's runs (command in its EXAMPLES); it should give her real numbers
+  (her control will come out about 1 point lower: random placement instead of first requests on top of each other).
 
 Note: `results/` is not in git. Results recorded on one PC must be copied by hand to another one.
 
@@ -196,9 +205,9 @@ How to run:
 
 ```bash
 ./shared-base/lab.sh add-clients 1                                         # the lab now has 2 clients
-./experiments/topology-comparison/run_test.sh clients_2 5 --clients 2
+./experiments/topology-comparison/run_test.sh clients_2_10k 5 --clients 2 --page 10k.bin
 ./shared-base/lab.sh add-clients 2                                         # 4 clients
-./experiments/topology-comparison/run_test.sh clients_4 5 --clients 4
+./experiments/topology-comparison/run_test.sh clients_4_10k 5 --clients 4 --page 10k.bin
 ./shared-base/lab.sh remove-clients                                        # back to the target client only
 ```
 
